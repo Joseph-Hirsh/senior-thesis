@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Data (keep raw data, ignore intermediate outputs if regeneratable)
+# Uncomment these if you want to exclude large data files from git:
+# data/master_country_year.csv
+# data/ideology_panel_country_year.csv
+# data/rr_aggregates_country_year.csv
+
+# R files
+.Rhistory
+.RData
+.Rproj.user/
+
+# Output files
+*.log
+*.out
+*.csv.gz
+
+# OS
+Thumbs.db
