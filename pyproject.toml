@@ -22,6 +22,16 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [project.scripts]
-build-master = "senior_thesis.build_master:main"
-audit-data = "senior_thesis.audit:main"
-run-analysis = "senior_thesis.analysis:main"
+# Data pipeline
+thesis-build = "senior_thesis.build_master:main"
+
+# Individual analyses
+thesis-describe = "senior_thesis.descriptive:main"
+thesis-regress = "senior_thesis.regressions:main"
+thesis-visualize = "senior_thesis.visualizations:main"
+
+# Run all analyses
+thesis-analyze = "senior_thesis.analysis:main"
+
+# Utilities
+thesis-audit = "senior_thesis.audit:main"

@@ -27,10 +27,14 @@ env/
 *.ipynb
 
 # Data (keep raw data, ignore intermediate outputs if regeneratable)
-# Uncomment these if you want to exclude large data files from git:
-# data/master_country_year.csv
-# data/ideology_panel_country_year.csv
-# data/rr_aggregates_country_year.csv
+data/master_country_year.csv
+data/ideology_panel_country_year.csv
+data/rr_aggregates_country_year.csv
+data/*.png
+data/*_results.csv
+
+# Generated results
+results/
 
 # R files
 .Rhistory
