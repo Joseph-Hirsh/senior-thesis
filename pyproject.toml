@@ -1,37 +1,28 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "senior-thesis"
-version = "0.1.0"
-description = "Senior thesis replication package"
+version = "1.0.0"
+description = "Military Specialization and Alliance Institutions Study"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = [
-  "pandas",
-  "numpy",
-  "pyreadr",
-  "statsmodels"
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "pyreadr>=0.5",
+    "statsmodels>=0.14",
+    "matplotlib>=3.7",
+    "seaborn>=0.13",
+    "scipy>=1.11",
 ]
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
 [project.scripts]
-# Data pipeline
-thesis-build = "senior_thesis.build_master:main"
+thesisizer = "senior_thesis.cli:main"
 
-# Individual analyses
-thesis-describe = "senior_thesis.descriptive:main"
-thesis-regress = "senior_thesis.regressions:main"
-thesis-visualize = "senior_thesis.visualizations:main"
+[tool.hatch.build.targets.wheel]
+packages = ["src/senior_thesis"]
 
-# Run all analyses
-thesis-analyze = "senior_thesis.analysis:main"
-
-# Utilities
-thesis-audit = "senior_thesis.audit:main"
+[tool.uv]
+dev-dependencies = []
