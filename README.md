@@ -15,10 +15,10 @@ uv run thesisizer
 ## Usage
 
 ```bash
-thesisizer              # Run full pipeline (~5 seconds)
+thesisizer              # Run full pipeline (build + h1 + h2)
 thesisizer --build      # Build datasets only
-thesisizer --desc       # Generate descriptives and figures
-thesisizer --reg        # Run regression analyses
+thesisizer --h1         # Run H1: Ideology -> Specialization
+thesisizer --h2         # Run H2/H2A/H2B: Alliance -> Specialization
 thesisizer --help       # Show help
 ```
 
@@ -36,18 +36,20 @@ thesisizer --help       # Show help
 | Type | Location | Contents |
 |------|----------|----------|
 | Datasets | `results/` | `master_country_year.csv`, `master_dyad_year.csv` |
-| Tables | `results/tables/` | Summary stats, regression results |
-| Figures | `results/figures/` | 8 publication-ready PNGs |
+| H1 Results | `results/h1/` | Summary stats, figures, regression tables |
+| H2 Results | `results/h2/` | Summary stats, figures, regression tables |
 
 ## Project Structure
 
 ```
 src/senior_thesis/
 ├── cli.py            # thesisizer command
-├── config.py         # Paths, controls
+├── config.py         # Paths, controls, formulas
+├── utils.py          # Data validation
 ├── build_datasets.py # Dataset construction
 ├── descriptives.py   # Stats + figures
-└── regressions.py    # Hypothesis tests
+├── regressions.py    # Hypothesis tests
+└── hypotheses.py     # Analysis orchestration
 ```
 
 ## Data Sources

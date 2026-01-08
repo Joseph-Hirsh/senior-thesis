@@ -5,46 +5,89 @@ __pycache__/
 *.so
 .Python
 *.egg-info/
+*.egg
 dist/
 build/
+eggs/
+wheels/
+pip-wheel-metadata/
+*.manifest
+*.spec
+MANIFEST
 
 # Virtual environments
 .venv/
 venv/
 ENV/
 env/
+.python-version
 
-# IDE
+# IDE and editors
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
+*.sublime-project
+*.sublime-workspace
+.spyderproject
+.spyproject
+
+# OS files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
 *.ipynb
 
-# Data (keep raw data, ignore intermediate outputs if regeneratable)
+# Testing and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+
+# Generated results (regeneratable from raw data)
+results/
+
+# Intermediate data files (regeneratable)
 data/master_country_year.csv
+data/master_dyad_year.csv
 data/ideology_panel_country_year.csv
 data/rr_aggregates_country_year.csv
 data/*.png
 data/*_results.csv
-
-# Generated results
-results/
 
 # R files
 .Rhistory
 .RData
 .Rproj.user/
 
-# Output files
+# Logs and temp files
 *.log
 *.out
+*.tmp
+*.temp
+*.bak
 *.csv.gz
 
-# OS
-Thumbs.db
+# uv lock file (optional - uncomment if you want to track it)
+# uv.lock

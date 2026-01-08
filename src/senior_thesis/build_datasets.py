@@ -7,12 +7,35 @@ Creates two analysis datasets:
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 import pyreadr
+import statsmodels.api as sm
 
-from senior_thesis.config import Paths
-from senior_thesis.utils import file_hash, assert_unique_key, merge_report, coverage_report
+from senior_thesis.config import (
+    Paths,
+    YEAR_START,
+    YEAR_END,
+    RILE_RIGHT_THRESHOLD,
+    RILE_LEFT_THRESHOLD,
+    setup_logging,
+)
+from senior_thesis.utils import (
+    file_hash,
+    assert_unique_key,
+    merge_report,
+    coverage_report,
+)
+
+__all__ = [
+    "build_country_year",
+    "build_dyad_year",
+    "build_all",
+]
+
+logger = logging.getLogger("senior_thesis")
 
 
 def _safe_log(x: pd.Series) -> pd.Series:
@@ -22,7 +45,7 @@ def _safe_log(x: pd.Series) -> pd.Series:
 
 def _load_specialization(paths: Paths) -> pd.DataFrame:
     """Load Gannon's military specialization data (country-year spine)."""
-    print(f"  Loading specialization data [{file_hash(paths.spec_rds)}]")
+    logger.info(f"Loading specialization data [{file_hash(paths.spec_rds)}]")
     df = list(pyreadr.read_r(paths.spec_rds).values())[0].copy()
 
     # Clean keys
@@ -37,13 +60,13 @@ def _load_specialization(paths: Paths) -> pd.DataFrame:
 
 def _load_manifesto(paths: Paths) -> pd.DataFrame:
     """Load Manifesto Project party ideology data."""
-    print(f"  Loading Manifesto data [{file_hash(paths.manifesto_csv)}]")
+    logger.info(f"Loading Manifesto data [{file_hash(paths.manifesto_csv)}]")
     return pd.read_csv(paths.manifesto_csv, low_memory=False)
 
 
 def _load_crosswalk(paths: Paths) -> pd.DataFrame:
     """Load Manifesto-to-COW country code crosswalk."""
-    print(f"  Loading crosswalk [{file_hash(paths.crosswalk_csv)}]")
+    logger.info(f"Loading crosswalk [{file_hash(paths.crosswalk_csv)}]")
     cw = pd.read_csv(paths.crosswalk_csv)
 
     # Normalize column names
@@ -59,23 +82,27 @@ def _load_crosswalk(paths: Paths) -> pd.DataFrame:
 
 def _load_rr(paths: Paths) -> pd.DataFrame:
     """Load Rapport & Rathbun alliance dyad data."""
-    print(f"  Loading R&R data [{file_hash(paths.rr_dta)}]")
+    logger.info(f"Loading R&R data [{file_hash(paths.rr_dta)}]")
     return pd.read_stata(paths.rr_dta)
 
 
 def _load_atop(paths: Paths) -> pd.DataFrame:
     """Load ATOP alliance membership data."""
-    print(f"  Loading ATOP membership [{file_hash(paths.atop_csv)}]")
+    logger.info(f"Loading ATOP membership [{file_hash(paths.atop_csv)}]")
     return pd.read_csv(paths.atop_csv, low_memory=False)
 
 
 def _load_depth(paths: Paths) -> pd.DataFrame:
     """Load Benson & Clinton alliance depth scores."""
-    print(f"  Loading alliance depth [{file_hash(paths.depth_csv)}]")
+    logger.info(f"Loading alliance depth [{file_hash(paths.depth_csv)}]")
     return pd.read_csv(paths.depth_csv, low_memory=False)
 
 
-def _build_ideology_panel(spec: pd.DataFrame, manifesto: pd.DataFrame, crosswalk: pd.DataFrame) -> pd.DataFrame:
+def _build_ideology_panel(
+    spec: pd.DataFrame,
+    manifesto: pd.DataFrame,
+    crosswalk: pd.DataFrame,
+) -> pd.DataFrame:
     """
     Build country-year ideology panel from party manifestos.
 
@@ -83,15 +110,19 @@ def _build_ideology_panel(spec: pd.DataFrame, manifesto: pd.DataFrame, crosswalk
     1. Link Manifesto countries to COW codes
     2. Identify governing party (largest seat share) per country-election
     3. Expand to country-year panel, forward-filling between elections
-    4. Create right_of_center binary (RILE >= 10 -> 1, RILE <= -10 -> 0)
+    4. Create right_of_center binary (RILE >= threshold -> 1, RILE <= -threshold -> 0)
     """
     # Link to COW codes
-    mf = manifesto.merge(crosswalk, left_on="country", right_on="manifesto_country_code", how="inner")
+    mf = manifesto.merge(
+        crosswalk, left_on="country", right_on="manifesto_country_code", how="inner"
+    )
 
-    # Parse election year
-    mf["election_year"] = pd.to_datetime(mf["edate"], errors="coerce", dayfirst=True).dt.year
-    fallback = mf["election_year"].isna() & mf["date"].notna()
-    mf.loc[fallback, "election_year"] = pd.to_numeric(mf.loc[fallback, "date"], errors="coerce") // 100
+    # Parse election year from edate (primary) or date column (fallback)
+    year_from_edate = pd.to_datetime(
+        mf["edate"], errors="coerce", dayfirst=True
+    ).dt.year
+    year_from_date = (pd.to_numeric(mf["date"], errors="coerce") // 100).astype("Int64")
+    mf["election_year"] = year_from_edate.fillna(year_from_date)
 
     # Compute party strength (seat share, vote share fallback)
     mf["strength"] = mf["absseat"] / mf["totseats"]
@@ -102,9 +133,13 @@ def _build_ideology_panel(spec: pd.DataFrame, manifesto: pd.DataFrame, crosswalk
     mf = mf.dropna(subset=["country_code_cow", "election_year", "strength"])
     mf["country_code_cow"] = mf["country_code_cow"].astype(int)
     mf["election_year"] = mf["election_year"].astype(int)
-    mf = mf.sort_values(["country_code_cow", "election_year", "strength"], ascending=[True, True, False])
+    mf = mf.sort_values(
+        ["country_code_cow", "election_year", "strength"], ascending=[True, True, False]
+    )
     gov = mf.groupby(["country_code_cow", "election_year"], as_index=False).first()
-    gov = gov[["country_code_cow", "election_year", "rile"]].rename(columns={"election_year": "year"})
+    gov = gov[["country_code_cow", "election_year", "rile"]].rename(
+        columns={"election_year": "year"}
+    )
 
     # Expand to country-year spine
     spine = spec[["country_code_cow", "year"]].drop_duplicates()
@@ -114,13 +149,68 @@ def _build_ideology_panel(spec: pd.DataFrame, manifesto: pd.DataFrame, crosswalk
     panel = panel.sort_values(["country_code_cow", "year"])
     panel["rile"] = panel.groupby("country_code_cow")["rile"].ffill()
 
-    # Create binary indicator
+    # Create binary indicator using config thresholds
     panel["right_of_center"] = np.where(
-        panel["rile"] >= 10, 1,
-        np.where(panel["rile"] <= -10, 0, np.nan)
+        panel["rile"] >= RILE_RIGHT_THRESHOLD,
+        1,
+        np.where(panel["rile"] <= RILE_LEFT_THRESHOLD, 0, np.nan),
     )
 
     return panel
+
+
+def _merge_by_partner(
+    df: pd.DataFrame,
+    data: pd.DataFrame,
+    var: str,
+    key_col: str = "country_code_cow",
+) -> pd.DataFrame:
+    """
+    Merge data for both dyad partners (state_a and state_b).
+
+    Args:
+        df: Target dataframe with state_a, state_b, and year columns
+        data: Source dataframe with key_col, year, and var columns
+        var: Variable name to merge (will become var_a and var_b)
+        key_col: Key column name in source data
+
+    Returns:
+        DataFrame with var_a and var_b columns added
+    """
+    for suffix in ["a", "b"]:
+        df = df.merge(
+            data.rename(columns={key_col: f"state_{suffix}", var: f"{var}_{suffix}"}),
+            on=[f"state_{suffix}", "year"],
+            how="left",
+        )
+    return df
+
+
+def _expand_dyad_years(rr: pd.DataFrame) -> pd.DataFrame:
+    """
+    Expand dyads to dyad-year panel using vectorized operations.
+
+    Args:
+        rr: R&R dyad data with dyad_start and dyad_end columns
+
+    Returns:
+        Expanded dyad-year panel
+    """
+    # Calculate number of years for each dyad
+    rr = rr.copy()
+    rr["n_years"] = (rr["dyad_end"] - rr["dyad_start"] + 1).clip(lower=0)
+
+    # Repeat rows by number of years
+    expanded = rr.loc[rr.index.repeat(rr["n_years"])].copy()
+
+    # Generate year sequence within each original row
+    expanded["year"] = expanded.groupby(level=0).cumcount() + expanded["dyad_start"]
+    expanded["year"] = expanded["year"].astype(int)
+
+    # Reset index and select key columns
+    expanded = expanded.reset_index(drop=True)
+
+    return expanded[["atopid", "state_a", "state_b", "year"]]
 
 
 def build_country_year(paths: Paths) -> pd.DataFrame:
@@ -133,7 +223,7 @@ def build_country_year(paths: Paths) -> pd.DataFrame:
     - rile, right_of_center (IV: ideology)
     - lngdp, cinc, war5_lag (controls)
     """
-    print("\n[1] Building country-year dataset...")
+    logger.info("Building country-year dataset...")
 
     # Load raw data
     spec = _load_specialization(paths)
@@ -151,7 +241,7 @@ def build_country_year(paths: Paths) -> pd.DataFrame:
     # Filter to observations with ideology data
     n_before = len(master)
     master = master.dropna(subset=["rile"])
-    print(f"  Filtered to rows with RILE: {len(master):,} of {n_before:,}")
+    logger.info(f"Filtered to rows with RILE: {len(master):,} of {n_before:,}")
 
     # Create/rename key variables
     if "spec_stand" in master.columns:
@@ -168,14 +258,16 @@ def build_country_year(paths: Paths) -> pd.DataFrame:
         master["cinc"] = master["cinc_MC"]
 
     if "interstatewar_5yrlag_binary" in master.columns:
-        master["war5_lag"] = pd.to_numeric(master["interstatewar_5yrlag_binary"], errors="coerce")
+        master["war5_lag"] = pd.to_numeric(
+            master["interstatewar_5yrlag_binary"], errors="coerce"
+        )
 
     # Verify and save
     assert_unique_key(master, ["country_code_cow", "year"], "country-year")
     coverage_report(master, "country_code_cow", "year", "country-year")
 
     master.to_csv(paths.country_year_csv, index=False)
-    print(f"  Saved: {paths.country_year_csv}")
+    logger.info(f"Saved: {paths.country_year_csv}")
 
     return master
 
@@ -191,7 +283,7 @@ def build_dyad_year(paths: Paths) -> pd.DataFrame:
     - hierarchical, voice_driven (IVs for H2A/H2B)
     - rile_dyad_mean, R&R controls
     """
-    print("\n[2] Building dyad-year dataset...")
+    logger.info("Building dyad-year dataset...")
 
     # Load raw data
     rr = _load_rr(paths)
@@ -211,7 +303,10 @@ def build_dyad_year(paths: Paths) -> pd.DataFrame:
     rr["state_b"] = rr["state_b"].astype(int)
     rr["yrent"] = rr["yrent"].astype(int)
 
-    print(f"  R&R dyads: {len(rr)} (inst=1: {(rr['inst']==1).sum()}, inst=2: {(rr['inst']==2).sum()}, inst=3: {(rr['inst']==3).sum()})")
+    logger.info(
+        f"R&R dyads: {len(rr)} (inst=1: {(rr['inst']==1).sum()}, "
+        f"inst=2: {(rr['inst']==2).sum()}, inst=3: {(rr['inst']==3).sum()})"
+    )
 
     # Get exit years from ATOP
     atop["atopid"] = pd.to_numeric(atop["atopid"], errors="coerce")
@@ -225,47 +320,54 @@ def build_dyad_year(paths: Paths) -> pd.DataFrame:
     exits.columns = ["atopid", "member", "exit_year"]
 
     # Merge exit years for both states
-    rr = rr.merge(exits.rename(columns={"member": "state_a", "exit_year": "exit_a"}),
-                  on=["atopid", "state_a"], how="left")
-    rr = rr.merge(exits.rename(columns={"member": "state_b", "exit_year": "exit_b"}),
-                  on=["atopid", "state_b"], how="left")
+    rr = rr.merge(
+        exits.rename(columns={"member": "state_a", "exit_year": "exit_a"}),
+        on=["atopid", "state_a"],
+        how="left",
+    )
+    rr = rr.merge(
+        exits.rename(columns={"member": "state_b", "exit_year": "exit_b"}),
+        on=["atopid", "state_b"],
+        how="left",
+    )
 
     # Handle missing/zero exit years (0 = still active)
-    rr["exit_a"] = rr["exit_a"].fillna(2014).replace(0, 2014).astype(int)
-    rr["exit_b"] = rr["exit_b"].fillna(2014).replace(0, 2014).astype(int)
-    rr["dyad_end"] = rr[["exit_a", "exit_b"]].min(axis=1).clip(upper=2014)
-    rr["dyad_start"] = rr["yrent"].clip(lower=1970)
+    rr["exit_a"] = rr["exit_a"].fillna(YEAR_END).replace(0, YEAR_END).astype(int)
+    rr["exit_b"] = rr["exit_b"].fillna(YEAR_END).replace(0, YEAR_END).astype(int)
+    rr["dyad_end"] = rr[["exit_a", "exit_b"]].min(axis=1).clip(upper=YEAR_END)
+    rr["dyad_start"] = rr["yrent"].clip(lower=YEAR_START)
 
-    # Expand to dyad-year panel
-    rows = []
-    for _, r in rr.iterrows():
-        start, end = max(int(r["dyad_start"]), 1970), min(int(r["dyad_end"]), 2014)
-        for year in range(start, end + 1):
-            rows.append({"atopid": r["atopid"], "state_a": r["state_a"], "state_b": r["state_b"], "year": year})
-
-    panel = pd.DataFrame(rows)
-    print(f"  Expanded to {len(panel):,} dyad-years")
+    # Expand to dyad-year panel (vectorized)
+    panel = _expand_dyad_years(rr)
+    logger.info(f"Expanded to {len(panel):,} dyad-years")
 
     # Merge R&R controls
-    rr_cols = ["atopid", "state_a", "state_b", "inst", "jntdem", "priorviol", "s_un_glo",
-               "tot_rivals", "totmids2", "undist", "coldwar", "symm", "lncprtio"]
+    rr_cols = [
+        "atopid",
+        "state_a",
+        "state_b",
+        "inst",
+        "jntdem",
+        "priorviol",
+        "s_un_glo",
+        "tot_rivals",
+        "totmids2",
+        "undist",
+        "coldwar",
+        "symm",
+        "lncprtio",
+    ]
     rr_cols = [c for c in rr_cols if c in rr.columns]
     panel = panel.merge(rr[rr_cols], on=["atopid", "state_a", "state_b"], how="left")
 
-    # Merge specialization for both states
+    # Merge specialization for both states using helper
     spec_data = master_cy[["country_code_cow", "year", "spec_y"]].copy()
-    panel = panel.merge(spec_data.rename(columns={"country_code_cow": "state_a", "spec_y": "spec_a"}),
-                        on=["state_a", "year"], how="left")
-    panel = panel.merge(spec_data.rename(columns={"country_code_cow": "state_b", "spec_y": "spec_b"}),
-                        on=["state_b", "year"], how="left")
-    panel["spec_dyad_mean"] = (panel["spec_a"] + panel["spec_b"]) / 2
+    panel = _merge_by_partner(panel, spec_data, "spec_y")
+    panel["spec_dyad_mean"] = (panel["spec_y_a"] + panel["spec_y_b"]) / 2
 
-    # Merge ideology for both states
+    # Merge ideology for both states using helper
     rile_data = master_cy[["country_code_cow", "year", "rile"]].copy()
-    panel = panel.merge(rile_data.rename(columns={"country_code_cow": "state_a", "rile": "rile_a"}),
-                        on=["state_a", "year"], how="left")
-    panel = panel.merge(rile_data.rename(columns={"country_code_cow": "state_b", "rile": "rile_b"}),
-                        on=["state_b", "year"], how="left")
+    panel = _merge_by_partner(panel, rile_data, "rile")
     panel["rile_dyad_mean"] = (panel["rile_a"] + panel["rile_b"]) / 2
 
     # Merge depth scores
@@ -279,10 +381,11 @@ def build_dyad_year(paths: Paths) -> pd.DataFrame:
     panel["priorviol_x_symm"] = panel["priorviol"] * panel["symm"]
 
     # Create depth_within_type (residualized depth)
-    import statsmodels.api as sm
     mask = panel["Depth.score"].notna() & panel["inst"].notna()
     if mask.sum() > 0:
-        X = sm.add_constant(panel.loc[mask, ["hierarchical", "voice_driven"]].values.astype(float))
+        X = sm.add_constant(
+            panel.loc[mask, ["hierarchical", "voice_driven"]].values.astype(float)
+        )
         y = panel.loc[mask, "Depth.score"].values.astype(float)
         resid = sm.OLS(y, X).fit().resid
         panel.loc[mask, "depth_within_type"] = resid
@@ -294,17 +397,27 @@ def build_dyad_year(paths: Paths) -> pd.DataFrame:
     # Coverage summary
     spec_n = panel["spec_dyad_mean"].notna().sum()
     depth_n = panel["Depth.score"].notna().sum()
-    print(f"  Coverage: spec_dyad_mean={spec_n:,} ({spec_n/len(panel):.1%}), Depth.score={depth_n:,} ({depth_n/len(panel):.1%})")
+    logger.info(
+        f"Coverage: spec_dyad_mean={spec_n:,} ({spec_n/len(panel):.1%}), "
+        f"Depth.score={depth_n:,} ({depth_n/len(panel):.1%})"
+    )
 
     panel.to_csv(paths.dyad_year_csv, index=False)
-    print(f"  Saved: {paths.dyad_year_csv}")
+    logger.info(f"Saved: {paths.dyad_year_csv}")
 
     return panel
 
 
 def build_all() -> None:
     """Build all datasets."""
+    setup_logging()
     paths = Paths()
+
+    # Validate input files
+    missing = paths.validate()
+    if missing:
+        logger.error(f"Missing input files: {missing}")
+        return
 
     # Ensure output directories exist
     paths.country_year_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -313,7 +426,7 @@ def build_all() -> None:
     build_country_year(paths)
     build_dyad_year(paths)
 
-    print("\n[Done] All datasets built successfully.")
+    logger.info("All datasets built successfully.")
 
 
 if __name__ == "__main__":
