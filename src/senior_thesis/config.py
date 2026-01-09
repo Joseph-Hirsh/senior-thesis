@@ -3,11 +3,15 @@ Configuration for the military specialization and alliance institutions study.
 
 Defines file paths, variable lists, and model specifications for testing:
 - H1: Ideology -> Specialization (country-year)
-- H2/H2A/H2B: Alliance institutions -> Partner specialization (dyad-year)
+- H2/H2A/H2B: Alliance institutions -> Division of labor (dyad-year)
+
+Statistical notes:
+- All models use two-way fixed effects and clustered standard errors
+- H1 tests lags 1-10 with Bonferroni correction for multiple testing
+- H2 uses dyad FE (following Gannon 2023) for within-dyad identification
 """
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -26,37 +30,31 @@ __all__ = [
     "FIGURE_DPI",
     "FORMULAS",
     "VARIABLE_MAP",
-    "setup_logging",
     "get_available_controls",
     "load_dataset",
 ]
 
+# =============================================================================
+# Project paths
+# =============================================================================
+
 # Package root directory (senior-thesis/)
 _ROOT = Path(__file__).parent.parent.parent
-
-# Analysis time bounds (Gannon specialization data coverage)
-YEAR_START: int = 1970
-YEAR_END: int = 2014
-
-# RILE ideology thresholds for binary classification
-RILE_RIGHT_THRESHOLD: float = 10.0
-RILE_LEFT_THRESHOLD: float = -10.0
-
-# Output settings
-FIGURE_DPI: int = 200
 
 
 @dataclass(frozen=True)
 class Paths:
-    """File paths for input data and output files."""
+    """File paths for input assets and output files."""
 
-    # Input data (absolute paths from project root)
-    spec_rds: Path = field(default_factory=lambda: _ROOT / "data" / "03_DF-full.rds")
-    manifesto_csv: Path = field(default_factory=lambda: _ROOT / "data" / "MPDataset_MPDS2025a.csv")
-    rr_dta: Path = field(default_factory=lambda: _ROOT / "data" / "partiestoanallianceR&R.dta")
-    crosswalk_csv: Path = field(default_factory=lambda: _ROOT / "data" / "manifesto_to_cow_crosswalk.csv")
-    atop_csv: Path = field(default_factory=lambda: _ROOT / "data" / "atop5_1m.csv")
-    depth_csv: Path = field(default_factory=lambda: _ROOT / "data" / "AllianceDataScoreJCR_RR.csv")
+    # Input assets (absolute paths from project root)
+    spec_rds: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "03_DF-full.rds")
+    manifesto_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "MPDataset_MPDS2025a.csv")
+    rr_dta: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "partiestoanallianceR&R.dta")
+    crosswalk_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "manifesto_to_cow_crosswalk.csv")
+    atop_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "atop5_1m.csv")
+    div_labor_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "division_of_labor.csv")
+    contiguity_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "contdird.csv")
+    rdmc_rds: Path = field(default_factory=lambda: _ROOT / "assets" / "rDMC_wide_v1.rds")
 
     # Output datasets
     country_year_csv: Path = field(default_factory=lambda: _ROOT / "results" / "master_country_year.csv")
@@ -68,7 +66,7 @@ class Paths:
 
     def validate(self) -> list[str]:
         """
-        Validate that all input files exist.
+        Validate that all required input files exist.
 
         Returns:
             List of missing file paths (empty if all exist)
@@ -79,43 +77,86 @@ class Paths:
             self.rr_dta,
             self.crosswalk_csv,
             self.atop_csv,
-            self.depth_csv,
+            self.div_labor_csv,
+            self.contiguity_csv,
         ]
         return [str(p) for p in input_paths if not p.exists()]
 
 
-# Control variables from Gannon (country-level)
-COUNTRY_CONTROLS: list[str] = ["lngdp", "cinc", "war5_lag"]
+# =============================================================================
+# Analysis parameters
+# =============================================================================
 
-# Control variables from Rapport & Rathbun (dyad-level)
-DYAD_CONTROLS: list[str] = [
-    "coldwar",
-    "tot_rivals",
-    "totmids2",
-    "s_un_glo",
-    "undist",
-    "jntdem",
-    "priorviol",
-    "symm",
-    "lncprtio",
-    "priorviol_x_symm",
+# Time bounds (Gannon specialization data coverage)
+YEAR_START: int = 1970
+YEAR_END: int = 2014
+
+# RILE ideology thresholds for binary classification
+# RILE >= RIGHT_THRESHOLD -> right_of_center = 1
+# RILE <= LEFT_THRESHOLD -> right_of_center = 0
+# Between thresholds -> right_of_center = NaN (excluded from binary analysis)
+RILE_RIGHT_THRESHOLD: float = 10.0
+RILE_LEFT_THRESHOLD: float = -10.0
+
+# Output settings
+FIGURE_DPI: int = 200
+
+
+# =============================================================================
+# Control variables
+# =============================================================================
+
+# Country-level controls for H1 (from Gannon)
+# - lngdp: Log GDP (economic capacity)
+# - cinc: CINC score (military capabilities)
+# - war5_lag: Interstate war in past 5 years (threat environment)
+# - in_hierarchical, in_voice, in_uninst: Alliance type membership
+COUNTRY_CONTROLS: list[str] = [
+    "lngdp",
+    "cinc",
+    "war5_lag",
+    "in_hierarchical",
+    "in_voice",
+    "in_uninst",
 ]
 
-# Institution type labels (R&R coding: 1=uninst, 2=voice, 3=hierarchical)
+# Dyad-level controls for H2
+# - contiguous: Binary land contiguity
+# - gdp_ratio: Ratio of log GDPs (larger/smaller)
+# - cinc_ratio: Ratio of CINC scores (larger/smaller)
+DYAD_CONTROLS: list[str] = [
+    "contiguous",
+    "gdp_ratio",
+    "cinc_ratio",
+]
+
+
+# =============================================================================
+# Institution type coding (Leeds & Anac 2005)
+# =============================================================================
+
+# Institution type labels: integer code -> human-readable label
 INST_LABELS: dict[int, str] = {
     1: "Uninstitutionalized",
     2: "Voice-Driven",
     3: "Hierarchical",
 }
 
-# Regression formulas (use {controls} placeholder for control variables)
+
+# =============================================================================
+# Regression formulas
+# =============================================================================
+
+# Use {controls} placeholder for control variables, {lag_var} for lag variable
 FORMULAS: dict[str, str] = {
-    "h1_main": "spec_y ~ right_of_center + {controls} + C(country_code_cow) + C(year)",
     "h1_lagged": "spec_y ~ {lag_var} + {controls} + C(country_code_cow) + C(year)",
-    "h2_depth": "spec_dyad_mean ~ Depth_score + {controls} + C(year)",
-    "h2ab_type": "spec_dyad_mean ~ hierarchical + voice_driven + {controls} + C(year)",
-    "robustness": "spec_dyad_mean ~ hierarchical + voice_driven + depth_within_type + {controls} + C(year)",
+    "h2_type": "div_labor ~ hierarchical + voice_driven + {controls} + C(dyad_id) + C(decade)",
 }
+
+
+# =============================================================================
+# Variable mapping
+# =============================================================================
 
 # Data dictionary: source column name -> analysis variable name
 VARIABLE_MAP: dict[str, str] = {
@@ -128,29 +169,12 @@ VARIABLE_MAP: dict[str, str] = {
     # Military controls
     "cinc_MC": "cinc",
     "interstatewar_5yrlag_binary": "war5_lag",
-    # Depth score (rename for formula compatibility)
-    "Depth.score": "Depth_score",
 }
 
 
-def setup_logging(level: int = logging.INFO) -> logging.Logger:
-    """
-    Configure logging for the thesis pipeline.
-
-    Args:
-        level: Logging level (default: INFO)
-
-    Returns:
-        Configured logger instance
-    """
-    logger = logging.getLogger("senior_thesis")
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter("  [%(levelname)s] %(message)s")
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-    logger.setLevel(level)
-    return logger
+# =============================================================================
+# Helper functions
+# =============================================================================
 
 
 def get_available_controls(df: pd.DataFrame, controls: list[str]) -> list[str]:

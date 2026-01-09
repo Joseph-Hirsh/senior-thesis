@@ -1,5 +1,5 @@
 """
-Utility functions for data validation and reproducibility.
+Utility functions for assets validation and reproducibility.
 """
 from __future__ import annotations
 

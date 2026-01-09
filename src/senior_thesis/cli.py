@@ -14,7 +14,7 @@ import argparse
 import sys
 import time
 
-from senior_thesis.config import Paths, setup_logging
+from senior_thesis.config import Paths
 
 __all__ = ["main"]
 
@@ -72,9 +72,6 @@ Hypotheses:
     parser.add_argument("--version", action="version", version="thesisizer 1.0.0")
 
     args = parser.parse_args()
-
-    # Set up logging
-    setup_logging()
 
     start = time.time()
     paths = Paths()

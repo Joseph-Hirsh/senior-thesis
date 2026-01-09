@@ -65,16 +65,16 @@ coverage.xml
 dmypy.json
 .pytype/
 
-# Generated results (regeneratable from raw data)
+# Generated results (regeneratable from raw assets)
 results/
 
-# Intermediate data files (regeneratable)
-data/master_country_year.csv
-data/master_dyad_year.csv
-data/ideology_panel_country_year.csv
-data/rr_aggregates_country_year.csv
+# Intermediate assets files (regeneratable)
+assets/master_country_year.csv
+assets/master_dyad_year.csv
+assets/ideology_panel_country_year.csv
+assets/rr_aggregates_country_year.csv
 data/*.png
-data/*_results.csv
+assets/*_results.csv
 
 # R files
 .Rhistory

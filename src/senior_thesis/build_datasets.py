@@ -7,8 +7,6 @@ Creates two analysis datasets:
 """
 from __future__ import annotations
 
-import logging
-
 import numpy as np
 import pandas as pd
 import pyreadr
@@ -20,7 +18,6 @@ from senior_thesis.config import (
     YEAR_END,
     RILE_RIGHT_THRESHOLD,
     RILE_LEFT_THRESHOLD,
-    setup_logging,
 )
 from senior_thesis.utils import (
     file_hash,
@@ -35,8 +32,6 @@ __all__ = [
     "build_all",
 ]
 
-logger = logging.getLogger("senior_thesis")
-
 
 def _safe_log(x: pd.Series) -> pd.Series:
     """Natural log, setting non-positive values to NaN."""
@@ -44,8 +39,8 @@ def _safe_log(x: pd.Series) -> pd.Series:
 
 
 def _load_specialization(paths: Paths) -> pd.DataFrame:
-    """Load Gannon's military specialization data (country-year spine)."""
-    logger.info(f"Loading specialization data [{file_hash(paths.spec_rds)}]")
+    """Load Gannon's military specialization assets (country-year spine)."""
+    print(f"  Loading specialization assets [{file_hash(paths.spec_rds)}]")
     df = list(pyreadr.read_r(paths.spec_rds).values())[0].copy()
 
     # Clean keys
@@ -59,14 +54,14 @@ def _load_specialization(paths: Paths) -> pd.DataFrame:
 
 
 def _load_manifesto(paths: Paths) -> pd.DataFrame:
-    """Load Manifesto Project party ideology data."""
-    logger.info(f"Loading Manifesto data [{file_hash(paths.manifesto_csv)}]")
+    """Load Manifesto Project party ideology assets."""
+    print(f"  Loading Manifesto assets [{file_hash(paths.manifesto_csv)}]")
     return pd.read_csv(paths.manifesto_csv, low_memory=False)
 
 
 def _load_crosswalk(paths: Paths) -> pd.DataFrame:
     """Load Manifesto-to-COW country code crosswalk."""
-    logger.info(f"Loading crosswalk [{file_hash(paths.crosswalk_csv)}]")
+    print(f"  Loading crosswalk [{file_hash(paths.crosswalk_csv)}]")
     cw = pd.read_csv(paths.crosswalk_csv)
 
     # Normalize column names
@@ -81,21 +76,41 @@ def _load_crosswalk(paths: Paths) -> pd.DataFrame:
 
 
 def _load_rr(paths: Paths) -> pd.DataFrame:
-    """Load Rapport & Rathbun alliance dyad data."""
-    logger.info(f"Loading R&R data [{file_hash(paths.rr_dta)}]")
+    """Load Rapport & Rathbun alliance dyad assets."""
+    print(f"  Loading R&R assets [{file_hash(paths.rr_dta)}]")
     return pd.read_stata(paths.rr_dta)
 
 
 def _load_atop(paths: Paths) -> pd.DataFrame:
-    """Load ATOP alliance membership data."""
-    logger.info(f"Loading ATOP membership [{file_hash(paths.atop_csv)}]")
+    """Load ATOP alliance membership assets."""
+    print(f"  Loading ATOP membership [{file_hash(paths.atop_csv)}]")
     return pd.read_csv(paths.atop_csv, low_memory=False)
 
 
-def _load_depth(paths: Paths) -> pd.DataFrame:
-    """Load Benson & Clinton alliance depth scores."""
-    logger.info(f"Loading alliance depth [{file_hash(paths.depth_csv)}]")
-    return pd.read_csv(paths.depth_csv, low_memory=False)
+def _load_contiguity(paths: Paths) -> pd.DataFrame:
+    """
+    Load COW Direct Contiguity dataset.
+
+    Creates binary contiguity indicator (1 = land contiguous, conttype=1).
+    Normalizes state ordering (state_a < state_b) to match dyad panel.
+    """
+    print(f"  Loading contiguity [{file_hash(paths.contiguity_csv)}]")
+    df = pd.read_csv(paths.contiguity_csv, low_memory=False)
+
+    # Rename columns
+    df = df.rename(columns={"state1no": "s1", "state2no": "s2"})
+
+    # Create binary: 1 if land contiguous (conttype=1), 0 otherwise
+    df["contiguous"] = (df["conttype"] == 1).astype(int)
+
+    # Normalize ordering (state_a < state_b)
+    df["state_a"] = df[["s1", "s2"]].min(axis=1)
+    df["state_b"] = df[["s1", "s2"]].max(axis=1)
+
+    # Keep unique dyad-year rows (take max contiguity if multiple entries)
+    df = df.groupby(["state_a", "state_b", "year"], as_index=False)["contiguous"].max()
+
+    return df[["state_a", "state_b", "year", "contiguous"]]
 
 
 def _build_ideology_panel(
@@ -129,6 +144,18 @@ def _build_ideology_panel(
     no_seats = mf["strength"].isna()
     mf.loc[no_seats, "strength"] = mf.loc[no_seats, "pervote"] / 100
 
+    # Create nationalism score (per601 - per602)
+    if "per601" in mf.columns and "per602" in mf.columns:
+        mf["nationalism"] = mf["per601"] - mf["per602"]
+    else:
+        mf["nationalism"] = np.nan
+
+    # Create military attitude score (per104 - per105)
+    if "per104" in mf.columns and "per105" in mf.columns:
+        mf["military_positive"] = mf["per104"] - mf["per105"]
+    else:
+        mf["military_positive"] = np.nan
+
     # Select governing party (strongest per country-election)
     mf = mf.dropna(subset=["country_code_cow", "election_year", "strength"])
     mf["country_code_cow"] = mf["country_code_cow"].astype(int)
@@ -137,7 +164,7 @@ def _build_ideology_panel(
         ["country_code_cow", "election_year", "strength"], ascending=[True, True, False]
     )
     gov = mf.groupby(["country_code_cow", "election_year"], as_index=False).first()
-    gov = gov[["country_code_cow", "election_year", "rile"]].rename(
+    gov = gov[["country_code_cow", "election_year", "rile", "nationalism", "military_positive"]].rename(
         columns={"election_year": "year"}
     )
 
@@ -148,6 +175,8 @@ def _build_ideology_panel(
     # Forward-fill ideology within country
     panel = panel.sort_values(["country_code_cow", "year"])
     panel["rile"] = panel.groupby("country_code_cow")["rile"].ffill()
+    panel["nationalism"] = panel.groupby("country_code_cow")["nationalism"].ffill()
+    panel["military_positive"] = panel.groupby("country_code_cow")["military_positive"].ffill()
 
     # Create binary indicator using config thresholds
     panel["right_of_center"] = np.where(
@@ -166,13 +195,13 @@ def _merge_by_partner(
     key_col: str = "country_code_cow",
 ) -> pd.DataFrame:
     """
-    Merge data for both dyad partners (state_a and state_b).
+    Merge assets for both dyad partners (state_a and state_b).
 
     Args:
         df: Target dataframe with state_a, state_b, and year columns
         data: Source dataframe with key_col, year, and var columns
         var: Variable name to merge (will become var_a and var_b)
-        key_col: Key column name in source data
+        key_col: Key column name in source assets
 
     Returns:
         DataFrame with var_a and var_b columns added
@@ -191,7 +220,7 @@ def _expand_dyad_years(rr: pd.DataFrame) -> pd.DataFrame:
     Expand dyads to dyad-year panel using vectorized operations.
 
     Args:
-        rr: R&R dyad data with dyad_start and dyad_end columns
+        rr: R&R dyad assets with dyad_start and dyad_end columns
 
     Returns:
         Expanded dyad-year panel
@@ -223,9 +252,9 @@ def build_country_year(paths: Paths) -> pd.DataFrame:
     - rile, right_of_center (IV: ideology)
     - lngdp, cinc, war5_lag (controls)
     """
-    logger.info("Building country-year dataset...")
+    print("\n  Building country-year dataset...")
 
-    # Load raw data
+    # Load raw assets
     spec = _load_specialization(paths)
     manifesto = _load_manifesto(paths)
     crosswalk = _load_crosswalk(paths)
@@ -233,15 +262,15 @@ def build_country_year(paths: Paths) -> pd.DataFrame:
     # Build ideology panel
     ideology = _build_ideology_panel(spec, manifesto, crosswalk)
 
-    # Merge with specialization data
+    # Merge with specialization assets
     master = spec.merge(ideology, on=["country_code_cow", "year"], how="left", indicator="_m")
     merge_report(master, "_m", "spec + ideology")
     master = master.drop(columns=["_m"])
 
-    # Filter to observations with ideology data
+    # Filter to observations with ideology assets
     n_before = len(master)
     master = master.dropna(subset=["rile"])
-    logger.info(f"Filtered to rows with RILE: {len(master):,} of {n_before:,}")
+    print(f"  Filtered to rows with RILE: {len(master):,} of {n_before:,}")
 
     # Create/rename key variables
     if "spec_stand" in master.columns:
@@ -266,157 +295,322 @@ def build_country_year(paths: Paths) -> pd.DataFrame:
     assert_unique_key(master, ["country_code_cow", "year"], "country-year")
     coverage_report(master, "country_code_cow", "year", "country-year")
 
+    # Save preliminary version (will add in_alliance after dyad assets is built)
     master.to_csv(paths.country_year_csv, index=False)
-    logger.info(f"Saved: {paths.country_year_csv}")
+    print(f"  Saved: {paths.country_year_csv}")
 
     return master
 
 
+def _add_alliance_membership(paths: Paths) -> None:
+    """
+    Add alliance membership indicators to country-year assets.
+
+    Creates:
+    - in_alliance: 1 if country is in any alliance
+    - in_hierarchical: 1 if country is in any hierarchical alliance (inst=3)
+    - in_voice: 1 if country is in any voice-driven alliance (inst=2)
+    - in_uninst: 1 if country is in any uninstitutionalized alliance (inst=1)
+
+    Must be called after dyad-year assets is built.
+    """
+    # Load datasets
+    cy = pd.read_csv(paths.country_year_csv)
+    dy = pd.read_csv(paths.dyad_year_csv)
+
+    # Helper to get country-years in alliances of a given type
+    def get_alliance_indicator(dy_subset, col_name):
+        a = dy_subset[["state_a", "year"]].drop_duplicates()
+        a.columns = ["country_code_cow", "year"]
+        b = dy_subset[["state_b", "year"]].drop_duplicates()
+        b.columns = ["country_code_cow", "year"]
+        result = pd.concat([a, b]).drop_duplicates()
+        result[col_name] = 1
+        return result
+
+    # All alliances
+    in_alliance = get_alliance_indicator(dy, "in_alliance")
+
+    # By type
+    in_hierarchical = get_alliance_indicator(dy[dy["inst"] == 3], "in_hierarchical")
+    in_voice = get_alliance_indicator(dy[dy["inst"] == 2], "in_voice")
+    in_uninst = get_alliance_indicator(dy[dy["inst"] == 1], "in_uninst")
+
+    # Merge all indicators
+    cy = cy.merge(in_alliance, on=["country_code_cow", "year"], how="left")
+    cy = cy.merge(in_hierarchical, on=["country_code_cow", "year"], how="left")
+    cy = cy.merge(in_voice, on=["country_code_cow", "year"], how="left")
+    cy = cy.merge(in_uninst, on=["country_code_cow", "year"], how="left")
+
+    # Fill NaN with 0
+    for col in ["in_alliance", "in_hierarchical", "in_voice", "in_uninst"]:
+        cy[col] = cy[col].fillna(0).astype(int)
+
+    # Report
+    n_alliance = cy["in_alliance"].sum()
+    n_hier = cy["in_hierarchical"].sum()
+    n_voice = cy["in_voice"].sum()
+    n_uninst = cy["in_uninst"].sum()
+    print(f"  Alliance membership added:")
+    print(f"    in_alliance:     {n_alliance:,} ({n_alliance/len(cy):.1%})")
+    print(f"    in_hierarchical: {n_hier:,} ({n_hier/len(cy):.1%})")
+    print(f"    in_voice:        {n_voice:,} ({n_voice/len(cy):.1%})")
+    print(f"    in_uninst:       {n_uninst:,} ({n_uninst/len(cy):.1%})")
+
+    cy.to_csv(paths.country_year_csv, index=False)
+
+
+def _build_institutionalization(atop: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build alliance institutionalization using Leeds & Anac (2005) treaty-provision criteria.
+
+    This is a 3-category NOMINAL outcome (not ordinal) reflecting distinct governance modes.
+    Hierarchy dominates voice; voice dominates absence.
+
+    Variables used (ATOP codebook):
+        INTCOM, MILCON, BASE, SUBORD, ORGAN1, ORGPURP1, ORGAN2, ORGPURP2, MILAID, CONTRIB
+
+    Categories (mutually exclusive, applied in order):
+
+        1. "hierarchical" - Authority, command, or structural control provisions:
+           - INTCOM == 1 (integrated command in peacetime and wartime)
+           - MILCON == 3 (common defense policy: doctrine, training, procurement, joint planning)
+           - BASE > 0 (joint or unilateral troop placement / basing)
+           - SUBORD in {1,2} (explicit subordination of forces during conflict)
+
+        2. "voice_driven" - Coordination/consultation mechanisms (if NOT hierarchical):
+           - MILCON == 2 (peacetime military consultation)
+           - mil_org_present: (ORGAN1 in {1,2,3} & ORGPURP1==1) OR (ORGAN2 in {1,2,3} & ORGPURP2==1)
+           - MILAID in {3,4} (training and/or technology transfer)
+           - CONTRIB == 1 (specified troop/supply/funding contributions)
+
+        3. "uninstitutionalized" - None of the above provisions
+
+    Missing value handling:
+        Missing values are treated as "provision absent" (equivalent to 0) following ATOP
+        coding conventions. Alliances with missing values on ALL institutional variables
+        are flagged in the output.
+    """
+    # Select relevant variables
+    # IMPORTANT: ATOP codes some variables at the member level (e.g., base rights).
+    # We aggregate by alliance, taking MAX of indicators since ANY member having
+    # a provision means the alliance has that provision.
+    inst_vars = [
+        "atopid", "intcom", "milcon", "base", "subord",
+        "organ1", "orgpurp1", "organ2", "orgpurp2", "milaid", "contrib"
+    ]
+
+    # Aggregate by alliance: take MAX of each institutional variable
+    # This ensures that if ANY member has base=3, the alliance gets base=3
+    inst = atop[inst_vars].groupby("atopid").max().reset_index()
+
+    # Track which alliances have missing data before filling
+    provision_cols = inst_vars[1:]  # exclude atopid
+    n_missing_per_alliance = inst[provision_cols].isna().sum(axis=1)
+    all_missing = n_missing_per_alliance == len(provision_cols)
+    if all_missing.sum() > 0:
+        print(f"    Warning: {all_missing.sum()} alliances have ALL provisions missing")
+
+    # Fill missing values with 0 (ATOP convention: missing = provision absent)
+    for col in provision_cols:
+        inst[col] = inst[col].fillna(0)
+
+    # Helper: military organization present for coordination purposes
+    # ORGPURP == 1 means "military coordination" purpose
+    mil_org_present = (
+        ((inst["organ1"].isin([1, 2, 3])) & (inst["orgpurp1"] == 1)) |
+        ((inst["organ2"].isin([1, 2, 3])) & (inst["orgpurp2"] == 1))
+    )
+
+    # Category 1: Hierarchical (authority-based governance)
+    # Includes ANY provision creating authority, command, or structural control
+    is_hierarchical = (
+        (inst["intcom"] == 1) |           # Integrated command
+        (inst["milcon"] == 3) |           # Common defense policy
+        (inst["base"] > 0) |              # Any basing arrangement
+        (inst["subord"].isin([1, 2]))     # Subordination of forces
+    )
+
+    # Category 2: Voice-driven (coordination mechanisms, if NOT hierarchical)
+    is_voice_driven = (
+        (inst["milcon"] == 2) |           # Peacetime consultation
+        mil_org_present |                  # Military coordinating organization
+        (inst["milaid"].isin([3, 4])) |   # Training/technology transfer
+        (inst["contrib"] == 1)             # Contribution requirements
+    )
+
+    # Assign categories (hierarchical > voice_driven > uninstitutionalized)
+    # Using integer codes: 1=uninst, 2=voice, 3=hierarchical
+    inst["inst"] = 1  # default: uninstitutionalized
+    inst.loc[is_voice_driven, "inst"] = 2  # voice_driven
+    inst.loc[is_hierarchical, "inst"] = 3  # hierarchical (overrides voice)
+
+    return inst[["atopid", "inst"]]
+
+
 def build_dyad_year(paths: Paths) -> pd.DataFrame:
     """
-    Build dyad-year dataset for H2/H2A/H2B (alliance institutions -> specialization).
+    Build dyad-year dataset for H2 (alliance type -> division of labor).
+
+    Uses Leeds & Anac (2005) institutionalization coding from ATOP treaty provisions.
+    This is a 3-category NOMINAL classification (not ordinal):
+
+    - Hierarchical (inst=3): INTCOM=1 OR MILCON=3 OR BASE>0 OR SUBORD in {1,2}
+    - Voice-driven (inst=2): MILCON=2 OR military org present OR MILAID in {3,4} OR CONTRIB=1
+    - Uninstitutionalized (inst=1): None of above
 
     Output variables:
     - atopid, state_a, state_b, year (IDs)
-    - spec_dyad_mean (DV: mean partner specialization)
-    - Depth.score (IV for H2)
-    - hierarchical, voice_driven (IVs for H2A/H2B)
-    - rile_dyad_mean, R&R controls
+    - div_labor (DV: pairwise portfolio complementarity, 0=identical, 1=fully dissimilar)
+    - hierarchical, voice_driven (IVs, nominal dummies)
+    - rile_dyad_mean
     """
-    logger.info("Building dyad-year dataset...")
+    print("\n  Building dyad-year dataset...")
+    print("  Using Leeds & Anac (2005) institutionalization coding from ATOP")
 
-    # Load raw data
-    rr = _load_rr(paths)
+    # Load raw assets
     atop = _load_atop(paths)
-    depth = _load_depth(paths)
 
     # Load country-year master for specialization and ideology
     master_cy = pd.read_csv(paths.country_year_csv)
 
-    # Clean R&R dyads
-    rr = rr.copy()
-    for col in ["atopid", "state_a", "state_b", "yrent"]:
-        rr[col] = pd.to_numeric(rr[col], errors="coerce")
-    rr = rr.dropna(subset=["atopid", "state_a", "state_b", "yrent"])
-    rr["atopid"] = rr["atopid"].astype(int)
-    rr["state_a"] = rr["state_a"].astype(int)
-    rr["state_b"] = rr["state_b"].astype(int)
-    rr["yrent"] = rr["yrent"].astype(int)
-
-    logger.info(
-        f"R&R dyads: {len(rr)} (inst=1: {(rr['inst']==1).sum()}, "
-        f"inst=2: {(rr['inst']==2).sum()}, inst=3: {(rr['inst']==3).sum()})"
-    )
-
-    # Get exit years from ATOP
-    atop["atopid"] = pd.to_numeric(atop["atopid"], errors="coerce")
-    atop["member"] = pd.to_numeric(atop["member"], errors="coerce")
-    atop["yrexit"] = pd.to_numeric(atop["yrexit"], errors="coerce")
-    atop = atop.dropna(subset=["atopid", "member"])
+    # Clean ATOP assets
+    atop = atop.copy()
+    for col in ["atopid", "member", "yrent", "yrexit"]:
+        atop[col] = pd.to_numeric(atop[col], errors="coerce")
+    atop = atop.dropna(subset=["atopid", "member", "yrent"])
     atop["atopid"] = atop["atopid"].astype(int)
     atop["member"] = atop["member"].astype(int)
+    atop["yrent"] = atop["yrent"].astype(int)
+    atop["yrexit"] = atop["yrexit"].fillna(YEAR_END).replace(0, YEAR_END).astype(int)
 
-    exits = atop.groupby(["atopid", "member"])["yrexit"].max().reset_index()
-    exits.columns = ["atopid", "member", "exit_year"]
-
-    # Merge exit years for both states
-    rr = rr.merge(
-        exits.rename(columns={"member": "state_a", "exit_year": "exit_a"}),
-        on=["atopid", "state_a"],
-        how="left",
-    )
-    rr = rr.merge(
-        exits.rename(columns={"member": "state_b", "exit_year": "exit_b"}),
-        on=["atopid", "state_b"],
-        how="left",
+    # Build institutionalization from ATOP variables
+    inst_df = _build_institutionalization(atop)
+    print(
+        f"  ATOP alliances: {len(inst_df)} "
+        f"(uninst={int((inst_df['inst']==1).sum())}, "
+        f"voice={int((inst_df['inst']==2).sum())}, "
+        f"hier={int((inst_df['inst']==3).sum())})"
     )
 
-    # Handle missing/zero exit years (0 = still active)
-    rr["exit_a"] = rr["exit_a"].fillna(YEAR_END).replace(0, YEAR_END).astype(int)
-    rr["exit_b"] = rr["exit_b"].fillna(YEAR_END).replace(0, YEAR_END).astype(int)
-    rr["dyad_end"] = rr[["exit_a", "exit_b"]].min(axis=1).clip(upper=YEAR_END)
-    rr["dyad_start"] = rr["yrent"].clip(lower=YEAR_START)
+    # Build all dyads from ATOP members
+    # First consolidate member entry/exit (some have multiple phases)
+    members = (
+        atop.groupby(["atopid", "member"])
+        .agg({"yrent": "min", "yrexit": "max"})
+        .reset_index()
+    )
 
-    # Expand to dyad-year panel (vectorized)
-    panel = _expand_dyad_years(rr)
-    logger.info(f"Expanded to {len(panel):,} dyad-years")
+    dyads = members.merge(members, on="atopid", suffixes=("_a", "_b"))
+    dyads = dyads[dyads["member_a"] < dyads["member_b"]]  # avoid duplicates/self-pairs
+    dyads = dyads.rename(columns={"member_a": "state_a", "member_b": "state_b"})
 
-    # Merge R&R controls
-    rr_cols = [
-        "atopid",
-        "state_a",
-        "state_b",
-        "inst",
-        "jntdem",
-        "priorviol",
-        "s_un_glo",
-        "tot_rivals",
-        "totmids2",
-        "undist",
-        "coldwar",
-        "symm",
-        "lncprtio",
-    ]
-    rr_cols = [c for c in rr_cols if c in rr.columns]
-    panel = panel.merge(rr[rr_cols], on=["atopid", "state_a", "state_b"], how="left")
+    # Compute dyad entry/exit (overlap period)
+    dyads["dyad_start"] = dyads[["yrent_a", "yrent_b"]].max(axis=1).clip(lower=YEAR_START)
+    dyads["dyad_end"] = dyads[["yrexit_a", "yrexit_b"]].min(axis=1).clip(upper=YEAR_END)
+    dyads = dyads[dyads["dyad_end"] >= dyads["dyad_start"]]  # valid time ranges only
 
-    # Merge specialization for both states using helper
-    spec_data = master_cy[["country_code_cow", "year", "spec_y"]].copy()
-    panel = _merge_by_partner(panel, spec_data, "spec_y")
-    panel["spec_dyad_mean"] = (panel["spec_y_a"] + panel["spec_y_b"]) / 2
+    # Remove any remaining duplicates
+    dyads = dyads.drop_duplicates(subset=["atopid", "state_a", "state_b"])
+
+    print(f"  Total dyads: {len(dyads):,}")
+
+    # Expand to dyad-year panel
+    panel = _expand_dyad_years(dyads)
+    print(f"  Expanded to {len(panel):,} dyad-years")
+
+    # Merge institutionalization
+    panel = panel.merge(inst_df, on="atopid", how="left")
+
+    # Merge division of labor (pairwise portfolio complementarity)
+    # Data already transformed: high values = high dissimilarity = high division of labor
+    div_labor_raw = pd.read_csv(paths.div_labor_csv)
+
+    # Normalize ordering to match panel (state_a < state_b)
+    div_labor_raw["s_min"] = div_labor_raw[["state_a", "state_b"]].min(axis=1)
+    div_labor_raw["s_max"] = div_labor_raw[["state_a", "state_b"]].max(axis=1)
+    div_labor_raw["state_a"] = div_labor_raw["s_min"]
+    div_labor_raw["state_b"] = div_labor_raw["s_max"]
+    div_labor_raw = div_labor_raw.drop(columns=["s_min", "s_max"])
+
+    panel = panel.merge(
+        div_labor_raw[["state_a", "state_b", "year", "div_labor"]],
+        on=["state_a", "state_b", "year"],
+        how="left"
+    )
 
     # Merge ideology for both states using helper
     rile_data = master_cy[["country_code_cow", "year", "rile"]].copy()
     panel = _merge_by_partner(panel, rile_data, "rile")
     panel["rile_dyad_mean"] = (panel["rile_a"] + panel["rile_b"]) / 2
 
-    # Merge depth scores
-    depth_data = depth[["atopid", "Depth.score"]].copy()
-    depth_data["atopid"] = pd.to_numeric(depth_data["atopid"], errors="coerce").astype(int)
-    panel = panel.merge(depth_data, on="atopid", how="left")
+    # Merge partner-level controls (GDP, CINC) for both states
+    if "lngdp" in master_cy.columns:
+        lngdp_data = master_cy[["country_code_cow", "year", "lngdp"]].copy()
+        panel = _merge_by_partner(panel, lngdp_data, "lngdp")
 
-    # Create binary dummies
+    if "cinc" in master_cy.columns:
+        cinc_data = master_cy[["country_code_cow", "year", "cinc"]].copy()
+        panel = _merge_by_partner(panel, cinc_data, "cinc")
+
+    # Merge contiguity
+    contiguity = _load_contiguity(paths)
+    panel = panel.merge(
+        contiguity,
+        on=["state_a", "state_b", "year"],
+        how="left"
+    )
+    panel["contiguous"] = panel["contiguous"].fillna(0).astype(int)
+
+    # Create ratio variables (larger / smaller for consistent interpretation)
+    # GDP ratio: ratio of log GDPs
+    if "lngdp_a" in panel.columns and "lngdp_b" in panel.columns:
+        lngdp_max = panel[["lngdp_a", "lngdp_b"]].max(axis=1)
+        lngdp_min = panel[["lngdp_a", "lngdp_b"]].min(axis=1)
+        panel["gdp_ratio"] = lngdp_max / lngdp_min.replace(0, np.nan)
+
+    # CINC ratio: ratio of military capabilities
+    if "cinc_a" in panel.columns and "cinc_b" in panel.columns:
+        cinc_max = panel[["cinc_a", "cinc_b"]].max(axis=1)
+        cinc_min = panel[["cinc_a", "cinc_b"]].min(axis=1)
+        panel["cinc_ratio"] = cinc_max / cinc_min.replace(0, np.nan)
+
+    # Create decade variable for FE
+    panel["decade"] = (panel["year"] // 10) * 10
+
+    # Create binary dummies for institution type
     panel["hierarchical"] = (panel["inst"] == 3).astype(int)
     panel["voice_driven"] = (panel["inst"] == 2).astype(int)
-    panel["priorviol_x_symm"] = panel["priorviol"] * panel["symm"]
-
-    # Create depth_within_type (residualized depth)
-    mask = panel["Depth.score"].notna() & panel["inst"].notna()
-    if mask.sum() > 0:
-        X = sm.add_constant(
-            panel.loc[mask, ["hierarchical", "voice_driven"]].values.astype(float)
-        )
-        y = panel.loc[mask, "Depth.score"].values.astype(float)
-        resid = sm.OLS(y, X).fit().resid
-        panel.loc[mask, "depth_within_type"] = resid
 
     # Verify and save
     assert_unique_key(panel, ["atopid", "state_a", "state_b", "year"], "dyad-year")
     coverage_report(panel, "atopid", "year", "dyad-year")
 
     # Coverage summary
-    spec_n = panel["spec_dyad_mean"].notna().sum()
-    depth_n = panel["Depth.score"].notna().sum()
-    logger.info(
-        f"Coverage: spec_dyad_mean={spec_n:,} ({spec_n/len(panel):.1%}), "
-        f"Depth.score={depth_n:,} ({depth_n/len(panel):.1%})"
-    )
+    div_labor_n = panel["div_labor"].notna().sum()
+    contiguous_n = panel["contiguous"].sum()
+    gdp_ratio_n = panel["gdp_ratio"].notna().sum() if "gdp_ratio" in panel.columns else 0
+    cinc_ratio_n = panel["cinc_ratio"].notna().sum() if "cinc_ratio" in panel.columns else 0
+    print(f"  Coverage:")
+    print(f"    div_labor={div_labor_n:,} ({div_labor_n/len(panel):.1%})")
+    print(f"    contiguous={contiguous_n:,} dyad-years ({contiguous_n/len(panel):.1%})")
+    print(f"    gdp_ratio={gdp_ratio_n:,} ({gdp_ratio_n/len(panel):.1%})")
+    print(f"    cinc_ratio={cinc_ratio_n:,} ({cinc_ratio_n/len(panel):.1%})")
 
     panel.to_csv(paths.dyad_year_csv, index=False)
-    logger.info(f"Saved: {paths.dyad_year_csv}")
+    print(f"  Saved: {paths.dyad_year_csv}")
 
     return panel
 
 
 def build_all() -> None:
     """Build all datasets."""
-    setup_logging()
     paths = Paths()
 
     # Validate input files
     missing = paths.validate()
     if missing:
-        logger.error(f"Missing input files: {missing}")
+        print(f"Error: Missing input files: {missing}")
         return
 
     # Ensure output directories exist
@@ -426,7 +620,10 @@ def build_all() -> None:
     build_country_year(paths)
     build_dyad_year(paths)
 
-    logger.info("All datasets built successfully.")
+    # Add alliance membership to country-year (requires dyad assets)
+    _add_alliance_membership(paths)
+
+    print("\n  All datasets built successfully.")
 
 
 if __name__ == "__main__":
