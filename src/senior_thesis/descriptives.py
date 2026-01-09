@@ -238,8 +238,9 @@ def h2_descriptives(paths: Paths) -> None:
         ax.set_title("Alliance Dyad Coverage Over Time")
 
     # Institution breakdown table
+    # After dyad-year collapse, use dyad_id for counting unique dyads
     breakdown = df.groupby("inst").agg(
-        n_dyads=("atopid", "nunique"), n_dyad_years=("year", "count")
+        n_dyads=("dyad_id", "nunique"), n_dyad_years=("year", "count")
     )
     breakdown.index = [INST_LABELS.get(i, i) for i in breakdown.index]
     breakdown.to_csv(out / "inst_breakdown.csv")

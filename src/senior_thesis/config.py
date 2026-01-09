@@ -49,20 +49,29 @@ class Paths:
     # Input assets (absolute paths from project root)
     spec_rds: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "03_DF-full.rds")
     manifesto_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "MPDataset_MPDS2025a.csv")
-    rr_dta: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "partiestoanallianceR&R.dta")
     crosswalk_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "manifesto_to_cow_crosswalk.csv")
     atop_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "atop5_1m.csv")
     div_labor_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "division_of_labor.csv")
     contiguity_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "contdird.csv")
     rdmc_rds: Path = field(default_factory=lambda: _ROOT / "assets" / "rDMC_wide_v1.rds")
+    nmc_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "NMC-60-wsupplementary.csv")
+    dcad_csv: Path = field(default_factory=lambda: _ROOT / "assets" / "datasets" / "DCAD-v1.0-dyadic.csv")
 
     # Output datasets
     country_year_csv: Path = field(default_factory=lambda: _ROOT / "results" / "master_country_year.csv")
     dyad_year_csv: Path = field(default_factory=lambda: _ROOT / "results" / "master_dyad_year.csv")
+    dyad_year_h3_csv: Path = field(default_factory=lambda: _ROOT / "results" / "master_dyad_year_h3.csv")
+    # Gannon+DCA aligned sample (1980-2010 where DCAD is observed) - ATOP-only
+    dyad_year_gannon_csv: Path = field(default_factory=lambda: _ROOT / "results" / "master_dyad_year_gannon_1980_2010.csv")
+    # Gannon UNION sample: ATOP OR DCAD aligned dyad-years (1980-2010)
+    dyad_year_gannon_union_csv: Path = field(default_factory=lambda: _ROOT / "results" / "master_dyad_year_gannon_union_1980_2010.csv")
 
-    # Hypothesis-specific output directories
+    # Output directories
+    results_dir: Path = field(default_factory=lambda: _ROOT / "results")
     h1_dir: Path = field(default_factory=lambda: _ROOT / "results" / "h1")
     h2_dir: Path = field(default_factory=lambda: _ROOT / "results" / "h2")
+    h3_dir: Path = field(default_factory=lambda: _ROOT / "results" / "h3")
+    audit_dir: Path = field(default_factory=lambda: _ROOT / "results" / "audit")
 
     def validate(self) -> list[str]:
         """
@@ -74,7 +83,6 @@ class Paths:
         input_paths = [
             self.spec_rds,
             self.manifesto_csv,
-            self.rr_dta,
             self.crosswalk_csv,
             self.atop_csv,
             self.div_labor_csv,
@@ -120,14 +128,14 @@ COUNTRY_CONTROLS: list[str] = [
     "in_uninst",
 ]
 
-# Dyad-level controls for H2
+# Dyad-level controls for H2 (Gannon 2023 style)
 # - contiguous: Binary land contiguity
-# - gdp_ratio: Ratio of log GDPs (larger/smaller)
-# - cinc_ratio: Ratio of CINC scores (larger/smaller)
+# - lngdp_ratio: Bounded ratio of log GDPs: min(lngdp_a, lngdp_b) / max(lngdp_a, lngdp_b) in [0,1]
+# - milex_ratio: Bounded ratio of military expenditures from NMC 6.0: min/max in [0,1]
 DYAD_CONTROLS: list[str] = [
     "contiguous",
-    "gdp_ratio",
-    "cinc_ratio",
+    "lngdp_ratio",
+    "milex_ratio",
 ]
 
 

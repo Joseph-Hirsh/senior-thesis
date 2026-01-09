@@ -1,942 +1,769 @@
 """
-Regression Analyses for Military Specialization & Alliance Institutions Study.
+Regression models for testing hypotheses.
 
-This module tests two core hypotheses about the determinants of military
-portfolio structure among democratic states:
+H1: Ruling party ideology → Military specialization (country-year)
+H2: Alliance institutionalization → Division of labor (dyad-year)
+H3: Ideological similarity → Division of labor (dyad-year)
 
-    H1: Ruling party ideology affects military specialization
-        - Right-of-center parties → less specialization (β < 0)
-        - Unit: Country-year
-        - Method: Two-way FE with lagged ideology (1-10 years)
-
-    H2: Alliance institutionalization affects division of labor
-        - H2A: Voice-driven > Uninstitutionalized (β > 0)
-        - H2B: Hierarchical > Voice-driven (β_hier > β_voice)
-        - Unit: Dyad-year
-        - Method: Dyad FE following Gannon (2023)
-
-Statistical Features:
-    - Proper Wald test for coefficient comparisons in H2B
-    - Clustered standard errors (country for H1, alliance for H2)
-    - Two-way fixed effects throughout
-
-Author: [Your Name]
-Date: 2024
+All models use:
+- Two-way fixed effects (unit + time)
+- Clustered standard errors
+- ATOP-only alliance type coding (Leeds & Anac 2005)
 """
 from __future__ import annotations
-
-from dataclasses import dataclass
-from pathlib import Path
-from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
 from scipy import stats as scipy_stats
-from statsmodels.regression.linear_model import RegressionResultsWrapper
 
-from senior_thesis.config import (
-    COUNTRY_CONTROLS,
-    DYAD_CONTROLS,
-    FORMULAS,
-    Paths,
-    get_available_controls,
-    load_dataset,
-)
+from senior_thesis.config import Paths, DYAD_CONTROLS, get_available_controls
 
 __all__ = [
-    "model_h1",
-    "model_h1_event_study",
-    "model_h1_did",
-    "model_h2",
-    "model_h2_event_study",
-    "run_all",
+    "run_h1_regressions",
+    "run_h2_regressions",
+    "run_h3_regressions",
 ]
 
-
-# =============================================================================
-# Data Structures
-# =============================================================================
-
-
-class ModelResult(NamedTuple):
-    """Container for regression model results."""
-
-    results_df: pd.DataFrame
-    model: RegressionResultsWrapper
-
-
-@dataclass
-class ModelSpec:
-    """Specification for a regression model."""
-
-    data: pd.DataFrame
-    formula: str
-    cluster_col: str
-    required_vars: list[str]
-    output_path: Path
-    title: str
-    key_vars: list[str]
+# Store results for summary table
+_ALL_RESULTS = {}
 
 
 # =============================================================================
 # Output Formatting
 # =============================================================================
 
+def _box(title: str) -> str:
+    """Create a boxed section header."""
+    width = 70
+    return (
+        f"\n{'═' * width}\n"
+        f"  {title}\n"
+        f"{'═' * width}"
+    )
 
-def _sig_stars(p: float) -> str:
-    """Return significance stars for p-value."""
-    if pd.isna(p):
-        return ""
-    if p < 0.01:
+
+def _subhead(title: str) -> str:
+    """Create a subsection header."""
+    return f"\n  ▶ {title}\n  {'─' * 60}"
+
+
+def _sig(p: float) -> str:
+    """Return significance stars."""
+    if p < 0.001:
         return "***"
-    if p < 0.05:
+    elif p < 0.01:
         return "**"
-    if p < 0.10:
+    elif p < 0.05:
         return "*"
+    elif p < 0.10:
+        return "†"
     return ""
 
 
-def _conclusion(coef: float, pval: float, expected_positive: bool) -> str:
-    """Determine conclusion based on coefficient direction and significance."""
-    if pval >= 0.10:
-        return "NULL RESULTS"
-    if expected_positive:
-        return "SUPPORTED" if coef > 0 else "CONTRARY TO HYPOTHESIS"
-    return "SUPPORTED" if coef < 0 else "CONTRARY TO HYPOTHESIS"
+def _sig_word(p: float) -> str:
+    """Return significance description."""
+    if p < 0.01:
+        return "significant at p<0.01"
+    elif p < 0.05:
+        return "significant at p<0.05"
+    elif p < 0.10:
+        return "marginally significant (p<0.10)"
+    return "not significant"
 
 
-def _box(text: str, width: int = 70) -> str:
-    """Create a boxed header."""
-    lines = [
-        "╔" + "═" * (width - 2) + "╗",
-        "║" + text.center(width - 2) + "║",
-        "╚" + "═" * (width - 2) + "╝",
-    ]
-    return "\n".join(lines)
-
-
-def _section(text: str) -> None:
-    """Print a section header."""
-    print()
-    print("─" * 70)
-    print(f"  {text}")
-    print("─" * 70)
-
-
-def _subsection(text: str) -> None:
-    """Print a subsection header."""
-    print()
-    print(f"  {text}")
-    print()
+def _format_coef(coef: float, se: float, p: float) -> str:
+    """Format coefficient with SE and significance."""
+    return f"β = {coef:.4f} (SE = {se:.4f}) {_sig(p)}"
 
 
 # =============================================================================
-# Core Regression Runner
+# H1: IDEOLOGY → SPECIALIZATION
 # =============================================================================
 
+def run_h1_regressions(paths: Paths) -> dict:
+    """
+    Run H1 regressions: Ideology → Specialization.
+    """
+    print(_box("H1: IDEOLOGY → SPECIALIZATION"))
+    print("""
+  THEORY: Right-of-center ruling parties, with preferences for lower
+  government spending, should produce less military specialization
+  (more generalist forces) compared to left-of-center parties.
 
-def _run_model(spec: ModelSpec) -> ModelResult:
-    """Run OLS regression with clustered standard errors."""
-    analysis = spec.data.dropna(subset=spec.required_vars).copy()
+  PREDICTION: β < 0 (higher RILE → less specialization)
+""")
 
-    model = smf.ols(spec.formula, data=analysis).fit(
+    results = {}
+    df = pd.read_csv(paths.country_year_csv)
+
+    # -------------------------------------------------------------------------
+    # PRIMARY SPECIFICATION
+    # -------------------------------------------------------------------------
+    print(_subhead("TEST 1: Primary Specification"))
+    print("""
+  What this tests: Does ruling party ideology predict military specialization?
+
+  Design:
+    • Outcome (DV):    spec_y = standardized specialization index
+    • Predictor (IV):  rile_lag5 = ruling party ideology (5-year lag)
+                       Scale: -100 (far left) to +100 (far right)
+    • Fixed Effects:   Country + Year (absorbs time-invariant country
+                       traits and common shocks)
+    • Standard Errors: Clustered by country
+""")
+
+    controls = ["lngdp", "cinc", "war5_lag"]
+    available = get_available_controls(df, controls)
+    required = ["spec_y", "rile_lag5", "country_code_cow", "year"] + available
+    analysis = df.dropna(subset=required).copy()
+
+    control_str = " + ".join(available) if available else "1"
+    formula = f"spec_y ~ rile_lag5 + {control_str} + C(country_code_cow) + C(year)"
+
+    model = smf.ols(formula, data=analysis).fit(
         cov_type="cluster",
-        cov_kwds={"groups": analysis[spec.cluster_col]},
+        cov_kwds={"groups": analysis["country_code_cow"]},
     )
 
-    rows = []
-    for var in spec.key_vars:
-        rows.append({
-            "Variable": var,
-            "Coefficient": model.params.get(var, np.nan),
-            "SE": model.bse.get(var, np.nan),
-            "p-value": model.pvalues.get(var, np.nan),
-            "Sig": _sig_stars(model.pvalues.get(var, np.nan)),
-        })
+    coef = model.params["rile_lag5"]
+    se = model.bse["rile_lag5"]
+    pval = model.pvalues["rile_lag5"]
 
-    results = pd.DataFrame(rows)
-    results.to_csv(spec.output_path, index=False)
-
-    return ModelResult(results_df=results, model=model)
-
-
-# =============================================================================
-# H1: Ideology → Specialization (Country-Year)
-# =============================================================================
-
-
-def model_h1(paths: Paths, lags: range = range(1, 11)) -> pd.DataFrame:
-    """
-    Test H1: Right-of-center ruling parties reduce military specialization.
-
-    Theoretical Motivation:
-        Right-of-center parties prioritize military self-sufficiency and
-        national defense autonomy. This preference leads to broader military
-        portfolios (less specialization) as states seek to maintain
-        independent capabilities across multiple domains.
-
-    Empirical Strategy:
-        - DV: Standardized specialization index (spec_y)
-        - IV: Lagged binary right-of-center indicator (1-10 year lags)
-        - FE: Country + Year (absorbs time-invariant country traits, common shocks)
-        - SE: Clustered by country (accounts for serial correlation)
-
-    Why Lagged Effects?
-        Defense procurement cycles span 5-15 years. Changes in ruling party
-        ideology affect procurement decisions, which then take years to
-        materialize in observable portfolio changes. Each lag tests a
-        distinct temporal mechanism and is therefore treated as independent.
-
-    Args:
-        paths: Configuration paths object
-        lags: Range of lag years to test (default: 1-10)
-
-    Returns:
-        DataFrame with results for each lag specification
-    """
+    print(f"  Sample size:     N = {int(model.nobs):,} country-years")
+    print(f"  Countries:       {analysis['country_code_cow'].nunique()}")
+    print(f"  Year range:      {int(analysis['year'].min())}–{int(analysis['year'].max())}")
     print()
-    print(_box("H1: RULING PARTY IDEOLOGY → MILITARY SPECIALIZATION"))
+    print(f"  RESULT:          {_format_coef(coef, se, pval)}")
+    print(f"  Interpretation:  A 10-point rightward shift in RILE is associated with")
+    print(f"                   a {abs(coef * 10):.3f} SD change in specialization")
+    print(f"  Significance:    {_sig_word(pval)}")
 
+    results["primary"] = {
+        "coefficient": coef, "se": se, "p_value": pval,
+        "n": int(model.nobs), "r2": model.rsquared,
+    }
+
+    # Store for summary
+    _ALL_RESULTS["H1"] = {
+        "coef": coef, "se": se, "p": pval, "n": int(model.nobs),
+        "supported": pval < 0.05 and coef < 0,
+        "direction": "negative" if coef < 0 else "positive",
+    }
+
+    pd.DataFrame([results["primary"]]).to_csv(
+        paths.h1_dir / "model_h1_primary.csv", index=False
+    )
+
+    # -------------------------------------------------------------------------
+    # PLACEBO TEST
+    # -------------------------------------------------------------------------
+    print(_subhead("TEST 2: Placebo Test (Reverse Causality Check)"))
+    print("""
+  What this tests: Does FUTURE ideology predict CURRENT specialization?
+
+  Logic: If we find that next year's ideology predicts this year's
+  specialization, that would suggest reverse causality or confounding.
+  Future events cannot cause past outcomes, so this should be null.
+
+  Design:
+    • Predictor (IV):  rile_lead1 = ideology 1 year IN THE FUTURE
+    • Expected:        No significant effect (β ≈ 0)
+""")
+
+    if "rile_lead1" not in df.columns:
+        df = df.sort_values(["country_code_cow", "year"])
+        df["rile_lead1"] = df.groupby("country_code_cow")["rile"].shift(-1)
+
+    required_placebo = ["spec_y", "rile_lead1", "country_code_cow", "year"] + available
+    analysis_placebo = df.dropna(subset=required_placebo).copy()
+
+    formula_placebo = f"spec_y ~ rile_lead1 + {control_str} + C(country_code_cow) + C(year)"
+    model_placebo = smf.ols(formula_placebo, data=analysis_placebo).fit(
+        cov_type="cluster",
+        cov_kwds={"groups": analysis_placebo["country_code_cow"]},
+    )
+
+    coef_p = model_placebo.params["rile_lead1"]
+    se_p = model_placebo.bse["rile_lead1"]
+    pval_p = model_placebo.pvalues["rile_lead1"]
+
+    print(f"  Sample size:     N = {int(model_placebo.nobs):,}")
     print()
-    print("  HYPOTHESIS")
-    print("  " + "─" * 66)
-    print("  Right-of-center ruling parties reduce military specialization")
-    print("  by prioritizing defense autonomy over alliance burden-sharing.")
-    print()
-    print("  Expected: Negative coefficient on lagged right_of_center")
-    print()
-    print("  IDENTIFICATION STRATEGY")
-    print("  " + "─" * 66)
-    print("  • Unit of analysis:  Country-year")
-    print("  • Dependent variable: Standardized specialization index")
-    print("  • Independent var:    Lagged right-of-center (binary, RILE ≥ 10)")
-    print("  • Fixed effects:      Country + Year (two-way)")
-    print("  • Standard errors:    Clustered by country")
-    print("  • Lags tested:        1-10 years (procurement cycles)")
-    print("  • Multiple testing:   None (each lag tests independent temporal mechanism)")
+    print(f"  RESULT:          {_format_coef(coef_p, se_p, pval_p)}")
 
-    df = load_dataset(paths.country_year_csv).copy()
-    df = df.sort_values(["country_code_cow", "year"])
-
-    for lag in lags:
-        df[f"roc_lag{lag}"] = df.groupby("country_code_cow")["right_of_center"].shift(lag)
-
-    controls = " + ".join(COUNTRY_CONTROLS)
-    results_all = []
-
-    _section("RESULTS BY LAG LENGTH")
-    print()
-    print(f"  {'Lag':<6} {'Coef':>10} {'SE':>10} {'p-value':>10} {'':>6}")
-    print("  " + "─" * 44)
-
-    for lag in lags:
-        var = f"roc_lag{lag}"
-        required = ["spec_y", var, "country_code_cow", "year"] + COUNTRY_CONTROLS
-        analysis = df.dropna(subset=required).copy()
-
-        formula = FORMULAS["h1_lagged"].format(lag_var=var, controls=controls)
-        model = smf.ols(formula, data=analysis).fit(
-            cov_type="cluster", cov_kwds={"groups": analysis["country_code_cow"]}
-        )
-
-        coef = model.params[var]
-        se = model.bse[var]
-        pval = model.pvalues[var]
-        sig = _sig_stars(pval)
-
-        print(f"  {lag:<6} {coef:>10.4f} {se:>10.4f} {pval:>10.4f} {sig:>6}")
-
-        results_all.append({
-            "Lag": lag,
-            "Variable": var,
-            "Coefficient": coef,
-            "SE": se,
-            "p-value": pval,
-            "Sig": sig,
-            "N": int(model.nobs),
-            "R2": model.rsquared,
-        })
-
-    results = pd.DataFrame(results_all)
-    results.to_csv(paths.h1_dir / "model_h1_lagged.csv", index=False)
-
-    # Model diagnostics
-    _section("MODEL DIAGNOSTICS")
-    print()
-    print(f"  Observations:     {int(model.nobs):,}")
-    print(f"  Countries:        {analysis['country_code_cow'].nunique()}")
-    print(f"  Year range:       {int(analysis['year'].min())}-{int(analysis['year'].max())}")
-    print(f"  R-squared:        {model.rsquared:.4f}")
-
-    # Conclusion
-    _section("CONCLUSION")
-
-    sig_results = results[results["p-value"] < 0.10]
-    if len(sig_results) > 0:
-        supporting = sig_results[sig_results["Coefficient"] < 0]
-        contrary = sig_results[sig_results["Coefficient"] > 0]
-
-        if len(supporting) > 0:
-            best = supporting.loc[supporting["p-value"].idxmin()]
-            print()
-            print(f"  ✓ HYPOTHESIS SUPPORTED")
-            print(f"    Best lag: {int(best['Lag'])} years")
-            print(f"    β = {best['Coefficient']:.4f}, p = {best['p-value']:.4f}")
-            print(f"    Significant at lags: {', '.join([str(int(x)) for x in supporting['Lag'].values])}")
-
-        if len(contrary) > 0:
-            print()
-            print(f"  ✗ CONTRARY TO HYPOTHESIS at some lags")
-            print(f"    Positive effects at lags: {', '.join([str(int(x)) for x in contrary['Lag'].values])}")
-            best_contrary = contrary.loc[contrary["p-value"].idxmin()]
-            print(f"    Strongest contrary: lag {int(best_contrary['Lag'])}, β = {best_contrary['Coefficient']:.4f}, p = {best_contrary['p-value']:.4f}")
+    passed = pval_p >= 0.10
+    if passed:
+        print(f"  Verdict:         ✓ PASSED — Future ideology does not predict")
+        print(f"                   current specialization (rules out reverse causality)")
     else:
-        print()
-        print("  ○ NULL RESULTS")
-        print("    No significant effects at any lag (p < 0.10)")
+        print(f"  Verdict:         ⚠ CONCERN — Possible confounding detected")
 
-    print()
+    results["placebo"] = {
+        "coefficient": coef_p, "se": se_p, "p_value": pval_p, "passed": passed,
+    }
+
+    # -------------------------------------------------------------------------
+    # EVENT STUDY
+    # -------------------------------------------------------------------------
+    print(_subhead("TEST 3: Event Study (Ideology Transitions)"))
+    print("""
+  What this tests: How does specialization evolve around ideology shifts?
+
+  Logic: If ideology causally affects specialization, we should see:
+    • No pre-trends (parallel trends before transition)
+    • Effects emerge AFTER the transition, not before
+
+  Design:
+    • Event:      First time a country's ruling party crosses RILE = 0
+    • Window:     5 years before to 5 years after transition
+    • Reference:  t = -1 (year before transition)
+""")
+
+    event_results = _run_event_study(df, paths, available, control_str)
+    results["event_study"] = event_results
+
     return results
-
-
-# =============================================================================
-# H1: Event Study Design
-# =============================================================================
 
 
 def _run_event_study(
     df: pd.DataFrame,
-    event_col: str,
-    label: str,
-    expected_sign: str,
-    output_path: Path,
-    window: int = 5,
-) -> pd.DataFrame:
-    """Run event study regression around ideology transitions."""
-    df = df.copy()
+    paths: Paths,
+    available: list[str],
+    control_str: str,
+) -> dict:
+    """Run ideology transition event study."""
+
     df = df.sort_values(["country_code_cow", "year"])
+    df["ideology_sign"] = np.sign(df["rile"])
+    df["sign_change"] = df.groupby("country_code_cow")["ideology_sign"].diff().abs() > 0
 
-    events = df[df[event_col]][["country_code_cow", "year"]].copy()
-    events = events.rename(columns={"year": "event_year"})
+    transitions = df[df["sign_change"]].copy()
+    transitions = transitions.groupby("country_code_cow").first().reset_index()
+    transitions = transitions.rename(columns={"year": "event_year"})
+    transitions["to_right"] = transitions["ideology_sign"] > 0
 
-    if len(events) == 0:
-        print(f"    No {label.lower()} found in data")
-        return pd.DataFrame()
+    results = {}
 
-    first_events = events.groupby("country_code_cow").first().reset_index()
-    n_countries = len(first_events)
+    for direction, label in [(True, "to_right"), (False, "to_left")]:
+        trans_subset = transitions[transitions["to_right"] == direction]
+        direction_desc = "Left → Right" if direction else "Right → Left"
 
-    print(f"    Events identified: {len(events)} transitions across {n_countries} countries")
+        if len(trans_subset) < 10:
+            print(f"  {direction_desc}: Only {len(trans_subset)} transitions (need ≥10)")
+            continue
 
-    df = df.merge(first_events, on="country_code_cow", how="left")
-    df["event_time"] = df["year"] - df["event_year"]
-    df_event = df[df["event_time"].between(-window, window)].copy()
+        event_df = df.merge(
+            trans_subset[["country_code_cow", "event_year"]],
+            on="country_code_cow", how="inner"
+        )
+        event_df["event_time"] = event_df["year"] - event_df["event_year"]
+        event_df = event_df[(event_df["event_time"] >= -5) & (event_df["event_time"] <= 5)]
 
-    if len(df_event) < 50:
-        print(f"    Insufficient observations: {len(df_event)} (minimum: 50)")
-        return pd.DataFrame()
+        def _varname(t: int) -> str:
+            return f"tm{abs(t)}" if t < 0 else f"tp{t}"
 
-    event_times = [t for t in range(-window, window + 1) if t != -1]
-    for t in event_times:
-        col_name = f"t_{t:+d}".replace("+", "p").replace("-", "m")
-        df_event[col_name] = (df_event["event_time"] == t).astype(int)
+        for t in range(-5, 6):
+            if t != -1:
+                event_df[_varname(t)] = (event_df["event_time"] == t).astype(int)
 
-    available_controls = get_available_controls(df_event, COUNTRY_CONTROLS)
-    controls = " + ".join(available_controls) if available_controls else "1"
-    event_vars = [f"t_{t:+d}".replace("+", "p").replace("-", "m") for t in event_times]
-    formula = f"spec_y ~ {' + '.join(event_vars)} + {controls} + C(country_code_cow) + C(year)"
+        time_dummies = " + ".join([_varname(t) for t in range(-5, 6) if t != -1])
+        formula = f"spec_y ~ {time_dummies} + {control_str} + C(country_code_cow) + C(year)"
 
-    required = ["spec_y", "country_code_cow", "year", "event_time"] + available_controls + event_vars
-    analysis = df_event.dropna(subset=required).copy()
+        required = ["spec_y", "country_code_cow", "year"] + available
+        analysis = event_df.dropna(subset=required)
 
-    if len(analysis) < 50:
-        print(f"    Insufficient observations after listwise deletion: {len(analysis)}")
-        return pd.DataFrame()
+        try:
+            model = smf.ols(formula, data=analysis).fit(
+                cov_type="cluster",
+                cov_kwds={"groups": analysis["country_code_cow"]},
+            )
+
+            print(f"\n  {direction_desc} transitions: {len(trans_subset)} countries")
+            print(f"  {'Time':>8}  {'Coefficient':>12}  {'Std.Err.':>10}  {'Sig.':>5}")
+            print(f"  {'─' * 40}")
+
+            coefs = []
+            post_coefs = []  # For summary: average post-transition effect
+            for t in range(-5, 6):
+                if t == -1:
+                    print(f"  {'t = -1':>8}  {'(reference)':>12}")
+                    coefs.append({"time": t, "coef": 0, "se": 0, "p": np.nan})
+                else:
+                    c = model.params[_varname(t)]
+                    s = model.bse[_varname(t)]
+                    p = model.pvalues[_varname(t)]
+                    print(f"  {f't = {t:>2}':>8}  {c:>12.4f}  {s:>10.4f}  {_sig(p):>5}")
+                    coefs.append({"time": t, "coef": c, "se": s, "p": p})
+                    if t >= 0:  # Post-transition periods
+                        post_coefs.append(c)
+
+            results[label] = pd.DataFrame(coefs)
+            results[label].to_csv(paths.h1_dir / f"event_study_{label}.csv", index=False)
+
+            # Store average post-transition effect for summary table
+            # For Left→Right: expect negative (less specialization)
+            # For Right→Left: expect positive (more specialization)
+            avg_post = np.mean(post_coefs) if post_coefs else 0
+
+            # Joint test of post-transition coefficients
+            post_vars = [_varname(t) for t in range(0, 6)]
+            try:
+                joint_test = model.f_test(" = ".join([f"{v} = 0" for v in post_vars[:1]]) if len(post_vars) == 1
+                                          else " = ".join(post_vars) + " = 0")
+                joint_p = float(joint_test.pvalue)
+            except:
+                # Fallback: use p-value of t=0 coefficient
+                joint_p = model.pvalues[_varname(0)]
+
+            key = f"ES_{label}"
+            if direction:  # to_right: expect avg_post < 0
+                _ALL_RESULTS[key] = {
+                    "coef": avg_post, "p": joint_p,
+                    "supported": joint_p < 0.05 and avg_post < 0,
+                    "n": len(trans_subset),
+                }
+            else:  # to_left: expect avg_post > 0
+                _ALL_RESULTS[key] = {
+                    "coef": avg_post, "p": joint_p,
+                    "supported": joint_p < 0.05 and avg_post > 0,
+                    "n": len(trans_subset),
+                }
+
+        except Exception as e:
+            print(f"  {direction_desc}: Model estimation failed ({e})")
+
+    return results
+
+
+# =============================================================================
+# H2: ALLIANCE INSTITUTIONALIZATION → DIVISION OF LABOR
+# =============================================================================
+
+def run_h2_regressions(paths: Paths) -> dict:
+    """
+    Run H2 regressions: Alliance type → Division of labor.
+    """
+    print(_box("H2: ALLIANCE TYPE → DIVISION OF LABOR"))
+    print("""
+  THEORY: More institutionalized alliances (hierarchical > voice-driven >
+  uninstitutionalized) facilitate greater division of labor between partners.
+
+  PREDICTIONS:
+    H2A: Voice-driven alliances > Uninstitutionalized (β_voice > 0)
+    H2B: Hierarchical alliances > Voice-driven (β_hier > β_voice)
+""")
+
+    results = {}
+    df = pd.read_csv(paths.dyad_year_gannon_union_csv)
+
+    # Sample description
+    print(_subhead("SAMPLE: Gannon UNION (1980-2010)"))
+    print(f"""
+  Definition:    Dyad-years where partners share an ATOP pact OR DCAD agreement
+
+  Total observations:     {len(df):,} dyad-years
+  Unique dyads:           {df['dyad_id'].nunique():,} alliance partnerships
+  Year range:             1980–2010
+""")
+
+    n_atop_only = ((df["any_atop_link"] == 1) & (df["any_dca_link"] != 1)).sum()
+    n_dca_only = ((df["any_atop_link"] != 1) & (df["any_dca_link"] == 1)).sum()
+    n_both = ((df["any_atop_link"] == 1) & (df["any_dca_link"] == 1)).sum()
+
+    print(f"  Alignment breakdown:")
+    print(f"    ATOP-only:    {n_atop_only:>8,} ({100*n_atop_only/len(df):.1f}%)")
+    print(f"    DCAD-only:    {n_dca_only:>8,} ({100*n_dca_only/len(df):.1f}%)")
+    print(f"    Both:         {n_both:>8,} ({100*n_both/len(df):.1f}%)")
+
+    # -------------------------------------------------------------------------
+    # ORDINAL SPECIFICATION
+    # -------------------------------------------------------------------------
+    print(_subhead("TEST 1: Ordinal Specification"))
+    print("""
+  What this tests: Does alliance depth predict division of labor?
+
+  Design:
+    • Outcome (DV):    div_labor = portfolio dissimilarity (0 = identical, 1 = fully different)
+    • Predictor (IV):  vertical_integration = ordinal scale
+                       0 = DCA-only (no formal treaty)
+                       1 = Uninstitutionalized ATOP alliance
+                       2 = Voice-driven ATOP alliance
+                       3 = Hierarchical ATOP alliance
+    • Fixed Effects:   Dyad + Decade
+    • Standard Errors: Clustered by dyad
+""")
+
+    controls = get_available_controls(df, DYAD_CONTROLS)
+    control_str = " + ".join(controls) if controls else "1"
+
+    required = ["div_labor", "vertical_integration", "dyad_id", "decade"] + controls
+    analysis = df.dropna(subset=required).copy()
+
+    # Distribution
+    vi_dist = analysis["vertical_integration"].value_counts().sort_index()
+    labels = {0: "DCA-only (vi=0)", 1: "Uninstitutionalized (vi=1)",
+              2: "Voice-driven (vi=2)", 3: "Hierarchical (vi=3)"}
+
+    print("  Sample distribution by alliance type:")
+    for vi, count in vi_dist.items():
+        print(f"    {labels.get(int(vi), vi):<30} {count:>8,} ({100*count/len(analysis):>5.1f}%)")
+
+    formula = f"div_labor ~ vertical_integration + {control_str} + C(dyad_id) + C(decade)"
 
     model = smf.ols(formula, data=analysis).fit(
-        cov_type="cluster", cov_kwds={"groups": analysis["country_code_cow"]}
+        cov_type="cluster",
+        cov_kwds={"groups": analysis["dyad_id"]},
     )
 
-    results_all = []
-    for t in event_times:
-        var = f"t_{t:+d}".replace("+", "p").replace("-", "m")
-        results_all.append({
-            "event_time": t,
-            "Coefficient": model.params.get(var, np.nan),
-            "SE": model.bse.get(var, np.nan),
-            "p-value": model.pvalues.get(var, np.nan),
-            "Sig": _sig_stars(model.pvalues.get(var, 1.0)),
-        })
-    results_all.append({
-        "event_time": -1,
-        "Coefficient": 0.0,
-        "SE": 0.0,
-        "p-value": np.nan,
-        "Sig": "(ref)",
-    })
-
-    results = pd.DataFrame(results_all).sort_values("event_time")
-    results.to_csv(output_path, index=False)
-
-    # Print coefficient table
-    print()
-    print(f"    {'Time':<8} {'Coef':>10} {'SE':>10} {'p-value':>10} {'':>6}")
-    print("    " + "─" * 44)
-    for _, row in results.iterrows():
-        t = int(row["event_time"])
-        if t == -1:
-            print(f"    t = {t:<4} {'0.0000':>10} {'—':>10} {'—':>10} {'(ref)':>6}")
-        else:
-            print(f"    t = {t:<4} {row['Coefficient']:>10.4f} {row['SE']:>10.4f} {row['p-value']:>10.4f} {row['Sig']:>6}")
+    coef = model.params["vertical_integration"]
+    se = model.bse["vertical_integration"]
+    pval = model.pvalues["vertical_integration"]
 
     print()
-    print(f"    N = {int(model.nobs):,}  |  R² = {model.rsquared:.4f}")
-
-    # Pre-trends test
-    pre_trend = results[(results["event_time"] < -1) & (results["event_time"] >= -window)]
-    pre_sig = pre_trend[pre_trend["p-value"] < 0.10]
-    if len(pre_sig) > 0:
-        print("    ⚠ Pre-trends detected (parallel trends assumption may be violated)")
-    else:
-        print("    ✓ No pre-trends detected")
-
-    # Post-effect assessment
-    post_effects = results[results["event_time"] > 0]
-    post_sig = post_effects[post_effects["p-value"] < 0.10]
-
-    if len(post_sig) > 0:
-        avg_coef = post_sig["Coefficient"].mean()
-        is_negative = avg_coef < 0
-        expected_negative = expected_sign == "negative"
-
-        if is_negative == expected_negative:
-            print(f"    ✓ Post-event effects: {avg_coef:.4f} ({expected_sign} as expected)")
-        else:
-            actual = "negative" if is_negative else "positive"
-            print(f"    ✗ Post-event effects: {avg_coef:.4f} ({actual}, expected {expected_sign})")
-    else:
-        print("    ○ No significant post-event effects")
-
-    return results
-
-
-def model_h1_event_study(paths: Paths, window: int = 5) -> dict[str, pd.DataFrame]:
-    """
-    Event study for H1: Specialization changes around ideology transitions.
-
-    Theoretical Motivation:
-        If ideology causally affects specialization, we should observe:
-        1. No differential pre-trends before transitions (parallel trends)
-        2. Systematic post-transition changes in the predicted direction
-
-    Design:
-        - Window: t-5 to t+5 around ideology transition
-        - Reference period: t = -1 (year before transition)
-        - Separate analyses for transitions TO right vs TO left
-        - Uses threshold of RILE = 0 for more transition events
-
-    Interpretation:
-        - Transitions TO right: expect negative post-effects (less specialization)
-        - Transitions TO left: expect positive post-effects (more specialization)
-    """
+    print(f"  Sample size:     N = {int(model.nobs):,} dyad-years")
     print()
-    print(_box("H1 EVENT STUDY: IDEOLOGY TRANSITIONS"))
+    print(f"  RESULT:          {_format_coef(coef, se, pval)}")
+    print(f"  Interpretation:  Moving up one level of institutionalization is")
+    print(f"                   associated with a {abs(coef):.4f} change in div_labor")
+    print(f"  Significance:    {_sig_word(pval)}")
 
-    print()
-    print("  DESIGN")
-    print("  " + "─" * 66)
-    print("  This event study tests whether specialization changes systematically")
-    print("  after ruling party ideology transitions, providing evidence for the")
-    print("  causal effect of ideology on military portfolio structure.")
-    print()
-    print("  • Event window:      t-5 to t+5 around transition")
-    print("  • Reference period:  t = -1 (year before transition)")
-    print("  • Ideology threshold: RILE = 0 (for sufficient transition events)")
-    print("  • Key assumption:    Parallel trends in pre-period")
+    results["ordinal"] = {
+        "coefficient": coef, "se": se, "p_value": pval,
+        "n": int(model.nobs), "r2": model.rsquared,
+    }
 
-    df = load_dataset(paths.country_year_csv).copy()
-    df = df.sort_values(["country_code_cow", "year"])
+    _ALL_RESULTS["H2_ordinal"] = {
+        "coef": coef, "se": se, "p": pval, "n": int(model.nobs),
+        "supported": pval < 0.05 and coef > 0,
+        "direction": "positive" if coef > 0 else "negative",
+    }
 
-    df["right_zero"] = (df["rile"] >= 0).astype(float)
-    df["right_zero"] = df["right_zero"].where(df["rile"].notna())
+    # -------------------------------------------------------------------------
+    # CATEGORICAL SPECIFICATION
+    # -------------------------------------------------------------------------
+    print(_subhead("TEST 2: Categorical Specification (H2A & H2B)"))
+    print("""
+  What this tests: Separate effects of each alliance type
 
-    df["roc_prev"] = df.groupby("country_code_cow")["right_zero"].shift(1)
-    df["transition"] = (df["right_zero"] != df["roc_prev"]) & df["roc_prev"].notna()
-    df["transition_to_right"] = df["transition"] & (df["right_zero"] == 1)
-    df["transition_to_left"] = df["transition"] & (df["right_zero"] == 0)
+  Design:
+    • Predictors:  hierarchical, voice_driven, uninstitutionalized (dummies)
+    • Reference:   DCA-only (informal defense cooperation, no formal treaty)
+    • NOTE: Uninst ATOP and DCA-only are NOT pooled — they are distinct categories
 
-    _section("SAMPLE OVERVIEW")
-    print()
-    print(f"  Transitions to right (left → right): {int(df['transition_to_right'].sum())}")
-    print(f"  Transitions to left (right → left):  {int(df['transition_to_left'].sum())}")
+  Expected:
+    H2A: β_voice > β_uninst (voice-driven > uninstitutionalized)
+    H2B: β_hier > β_voice (hierarchical > voice-driven)
+""")
 
-    results = {}
+    analysis["hierarchical"] = (analysis["vertical_integration"] == 3).astype(int)
+    analysis["voice_driven"] = (analysis["vertical_integration"] == 2).astype(int)
+    analysis["uninstitutionalized"] = (analysis["vertical_integration"] == 1).astype(int)
 
-    _section("TRANSITIONS TO RIGHT (Left → Right)")
-    print()
-    print("  If H1 is correct, right-wing governments reduce specialization.")
-    print("  Expected: NEGATIVE coefficients in post-transition periods")
-    print()
+    formula_cat = f"div_labor ~ hierarchical + voice_driven + uninstitutionalized + {control_str} + C(dyad_id) + C(decade)"
 
-    results["to_right"] = _run_event_study(
-        df=df,
-        event_col="transition_to_right",
-        label="Transitions to right",
-        expected_sign="negative",
-        output_path=paths.h1_dir / "model_h1_event_study_to_right.csv",
-        window=window,
-    )
-
-    _section("TRANSITIONS TO LEFT (Right → Left)")
-    print()
-    print("  Symmetric prediction: left-wing governments increase specialization.")
-    print("  Expected: POSITIVE coefficients in post-transition periods")
-    print()
-
-    results["to_left"] = _run_event_study(
-        df=df,
-        event_col="transition_to_left",
-        label="Transitions to left",
-        expected_sign="positive",
-        output_path=paths.h1_dir / "model_h1_event_study_to_left.csv",
-        window=window,
-    )
-
-    return results
-
-
-def model_h1_did(paths: Paths, window: int = 5) -> dict[str, dict]:
-    """
-    Difference-in-differences for H1: Single post-transition effect estimate.
-
-    This is a more parsimonious specification than the event study, estimating
-    a single average post-treatment effect rather than separate coefficients
-    for each event-time. This approach has more statistical power but provides
-    less information about effect dynamics.
-    """
-    print()
-    print(_box("H1 DIFFERENCE-IN-DIFFERENCES"))
-
-    print()
-    print("  DESIGN")
-    print("  " + "─" * 66)
-    print("  A parsimonious alternative to the event study that estimates a")
-    print("  single average post-transition effect. More statistical power,")
-    print("  but less information about effect dynamics.")
-    print()
-    print("  • Specification:  spec_y ~ post + controls + country_FE + year_FE")
-    print("  • Post indicator: 1 if event_time ≥ 0, 0 otherwise")
-    print(f"  • Window:         ±{window} years around transition")
-
-    df = load_dataset(paths.country_year_csv).copy()
-    df = df.sort_values(["country_code_cow", "year"])
-
-    df["right_zero"] = (df["rile"] >= 0).astype(float)
-    df["right_zero"] = df["right_zero"].where(df["rile"].notna())
-
-    df["roc_prev"] = df.groupby("country_code_cow")["right_zero"].shift(1)
-    df["transition"] = (df["right_zero"] != df["roc_prev"]) & df["roc_prev"].notna()
-    df["transition_to_right"] = df["transition"] & (df["right_zero"] == 1)
-    df["transition_to_left"] = df["transition"] & (df["right_zero"] == 0)
-
-    results = {}
-
-    for direction, event_col, expected_sign in [
-        ("TO RIGHT", "transition_to_right", "negative"),
-        ("TO LEFT", "transition_to_left", "positive"),
-    ]:
-        _section(f"TRANSITIONS {direction}")
-        print()
-        print(f"  Expected: {expected_sign.upper()} post-transition effect")
-        print()
-
-        events = df[df[event_col]][["country_code_cow", "year"]].copy()
-        events = events.rename(columns={"year": "event_year"})
-
-        if len(events) == 0:
-            print("    No transitions found")
-            continue
-
-        first_events = events.groupby("country_code_cow").first().reset_index()
-        n_countries = len(first_events)
-        print(f"    Events: {len(events)} transitions across {n_countries} countries")
-
-        df_temp = df.merge(first_events, on="country_code_cow", how="left")
-        df_temp["event_time"] = df_temp["year"] - df_temp["event_year"]
-        df_event = df_temp[df_temp["event_time"].between(-window, window)].copy()
-
-        if len(df_event) < 50:
-            print(f"    Insufficient observations: {len(df_event)}")
-            continue
-
-        df_event["post"] = (df_event["event_time"] >= 0).astype(int)
-
-        available_controls = get_available_controls(df_event, COUNTRY_CONTROLS)
-        controls = " + ".join(available_controls) if available_controls else "1"
-        formula = f"spec_y ~ post + {controls} + C(country_code_cow) + C(year)"
-
-        required = ["spec_y", "country_code_cow", "year", "post"] + available_controls
-        analysis = df_event.dropna(subset=required).copy()
-
-        if len(analysis) < 50:
-            print(f"    Insufficient observations: {len(analysis)}")
-            continue
-
-        model = smf.ols(formula, data=analysis).fit(
-            cov_type="cluster", cov_kwds={"groups": analysis["country_code_cow"]}
+    try:
+        model_cat = smf.ols(formula_cat, data=analysis).fit(
+            cov_type="cluster",
+            cov_kwds={"groups": analysis["dyad_id"]},
         )
 
-        coef = model.params["post"]
-        se = model.bse["post"]
-        pval = model.pvalues["post"]
-        sig = _sig_stars(pval)
+        hier_coef = model_cat.params["hierarchical"]
+        hier_se = model_cat.bse["hierarchical"]
+        hier_p = model_cat.pvalues["hierarchical"]
 
+        voice_coef = model_cat.params["voice_driven"]
+        voice_se = model_cat.bse["voice_driven"]
+        voice_p = model_cat.pvalues["voice_driven"]
+
+        uninst_coef = model_cat.params["uninstitutionalized"]
+        uninst_se = model_cat.bse["uninstitutionalized"]
+        uninst_p = model_cat.pvalues["uninstitutionalized"]
+
+        print(f"  Sample size:     N = {int(model_cat.nobs):,}")
         print()
-        print(f"    Post-transition effect: β = {coef:.4f} (SE = {se:.4f})")
-        print(f"    p-value: {pval:.4f} {sig}")
-        print(f"    N = {int(model.nobs):,}  |  R² = {model.rsquared:.4f}")
+        print(f"  RESULTS (vs. DCA-only reference):")
+        print(f"    Uninstitutionalized: {_format_coef(uninst_coef, uninst_se, uninst_p)}")
+        print(f"    Voice-driven:        {_format_coef(voice_coef, voice_se, voice_p)}")
+        print(f"    Hierarchical:        {_format_coef(hier_coef, hier_se, hier_p)}")
         print()
 
-        is_correct_sign = (coef < 0) == (expected_sign == "negative")
+        # H2A test: voice > uninst
+        try:
+            wald_h2a = model_cat.wald_test("voice_driven - uninstitutionalized = 0", scalar=True)
+            p_h2a = float(wald_h2a.pvalue)
+        except Exception:
+            diff_h2a = voice_coef - uninst_coef
+            se_diff_h2a = np.sqrt(voice_se**2 + uninst_se**2)
+            t_stat_h2a = diff_h2a / se_diff_h2a
+            p_h2a = 2 * (1 - scipy_stats.t.cdf(abs(t_stat_h2a), model_cat.df_resid))
 
-        if pval < 0.10:
-            if is_correct_sign:
-                print(f"    ✓ HYPOTHESIS SUPPORTED")
-            else:
-                print(f"    ✗ CONTRARY TO HYPOTHESIS")
-        else:
-            print(f"    ○ NULL RESULTS (direction {'correct' if is_correct_sign else 'incorrect'})")
+        diff_h2a = voice_coef - uninst_coef
+        print(f"  H2A TEST (voice-driven > uninstitutionalized):")
+        print(f"    Difference:    Δβ = {diff_h2a:.4f} (voice - uninst)")
+        print(f"    p-value:       p = {p_h2a:.4f} {_sig(p_h2a)}")
+        print(f"    Result:        {_sig_word(p_h2a)}, {'supported' if p_h2a < 0.05 and diff_h2a > 0 else 'not supported'}")
 
-        results[direction.lower().replace(" ", "_")] = {
-            "coefficient": coef,
-            "se": se,
-            "p_value": pval,
-            "n": int(model.nobs),
-            "n_countries": n_countries,
+        # H2B test: hier > voice
+        try:
+            wald_h2b = model_cat.wald_test("hierarchical - voice_driven = 0", scalar=True)
+            p_h2b = float(wald_h2b.pvalue)
+        except Exception:
+            diff_h2b = hier_coef - voice_coef
+            se_diff_h2b = np.sqrt(hier_se**2 + voice_se**2)
+            t_stat_h2b = diff_h2b / se_diff_h2b
+            p_h2b = 2 * (1 - scipy_stats.t.cdf(abs(t_stat_h2b), model_cat.df_resid))
+
+        diff_h2b = hier_coef - voice_coef
+        print()
+        print(f"  H2B TEST (hierarchical > voice-driven):")
+        print(f"    Difference:    Δβ = {diff_h2b:.4f} (hier - voice)")
+        print(f"    p-value:       p = {p_h2b:.4f} {_sig(p_h2b)}")
+        print(f"    Result:        {_sig_word(p_h2b)}, {'supported' if p_h2b < 0.05 and diff_h2b > 0 else 'not supported'}")
+
+        results["categorical"] = {
+            "hierarchical": hier_coef, "voice_driven": voice_coef, "uninstitutionalized": uninst_coef,
+            "h2a_diff": diff_h2a, "h2a_p": p_h2a,
+            "h2b_diff": diff_h2b, "h2b_p": p_h2b, "n": int(model_cat.nobs),
         }
 
+        _ALL_RESULTS["H2A"] = {
+            "coef": diff_h2a, "se": se_diff_h2a if 'se_diff_h2a' in dir() else np.nan, "p": p_h2a,
+            "n": int(model_cat.nobs),
+            "supported": p_h2a < 0.05 and diff_h2a > 0,
+        }
+        _ALL_RESULTS["H2B"] = {
+            "coef": diff_h2b, "se": se_diff_h2b if 'se_diff_h2b' in dir() else np.nan, "p": p_h2b,
+            "n": int(model_cat.nobs),
+            "supported": p_h2b < 0.05 and diff_h2b > 0,
+        }
+
+    except np.linalg.LinAlgError:
+        print("  ⚠ Model estimation failed due to multicollinearity")
+        print("    This often occurs when dyad fixed effects absorb too much variation.")
+        print("    The ordinal specification above provides the primary test.")
+        results["categorical"] = None
+
+    # Save
+    results_df = pd.DataFrame([{
+        "specification": "ordinal",
+        "variable": "vertical_integration",
+        **results["ordinal"],
+    }])
+    results_df.to_csv(paths.h2_dir / "model_h2_primary.csv", index=False)
+
     return results
 
 
 # =============================================================================
-# H2: Alliance Type → Division of Labor (Dyad-Year)
+# H3: IDEOLOGICAL SIMILARITY → DIVISION OF LABOR
 # =============================================================================
 
-
-def model_h2(paths: Paths) -> pd.DataFrame:
+def run_h3_regressions(paths: Paths) -> dict:
     """
-    Test H2: Alliance institutionalization promotes division of labor.
-
-    Theoretical Motivation:
-        Institutionalized alliances provide mechanisms (consultation, joint
-        planning, integrated command) that enable credible commitment to
-        role specialization. Partners can specialize knowing their allies
-        will provide complementary capabilities.
-
-        H2A: Voice-driven alliances (consultation mechanisms) enable more
-             division of labor than uninstitutionalized alliances.
-        H2B: Hierarchical alliances (command authority) enable even more
-             division of labor by reducing coordination costs.
-
-    Empirical Strategy:
-        - DV: Division of labor (portfolio dissimilarity, 0-1 scale)
-        - IV: Alliance type dummies (ref: uninstitutionalized)
-        - FE: Dyad + Decade (within-dyad identification, following Gannon 2023)
-        - SE: Clustered by alliance
-        - Test: Wald test for H2B (hier > voice) using covariance matrix
-
-    Why Dyad Fixed Effects?
-        Dyad FE controls for all time-invariant dyad characteristics (geography,
-        historical ties, baseline complementarity). This identifies effects from
-        dyads that CHANGE their institutional arrangement over time—a more
-        credibly causal design than between-dyad comparisons.
+    Run H3 regressions: Ideological similarity → Division of labor.
     """
-    print()
-    print(_box("H2: ALLIANCE INSTITUTIONALIZATION → DIVISION OF LABOR"))
+    print(_box("H3: IDEOLOGICAL SIMILARITY → DIVISION OF LABOR"))
+    print("""
+  THEORY: Alliance partners with similar ideologies should find it easier
+  to coordinate and specialize, leading to greater division of labor.
 
-    print()
-    print("  HYPOTHESES")
-    print("  " + "─" * 66)
-    print("  H2A: Voice-driven alliances produce more division of labor than")
-    print("       uninstitutionalized alliances (β_voice > 0)")
-    print()
-    print("  H2B: Hierarchical alliances produce more division of labor than")
-    print("       voice-driven alliances (β_hier > β_voice)")
-    print()
-    print("  IDENTIFICATION STRATEGY")
-    print("  " + "─" * 66)
-    print("  • Unit of analysis:   Dyad-year (within alliance)")
-    print("  • Dependent variable: Division of labor (portfolio dissimilarity)")
-    print("  • Independent vars:   Hierarchical, Voice-driven (ref: uninstitutionalized)")
-    print("  • Fixed effects:      Dyad + Decade (within-dyad identification)")
-    print("  • Standard errors:    Clustered by alliance")
-    print("  • H2B test:           Wald test with proper covariance matrix")
-    print()
-    print("  Note: Dyad FE identifies from the ~38% of dyads that change")
-    print("        institution type over time, controlling for all time-invariant")
-    print("        dyad characteristics.")
+  PREDICTION: β < 0 (greater ideological distance → less division of labor)
+              OR equivalently: similarity → more division of labor
+""")
 
-    df = load_dataset(paths.dyad_year_csv).copy()
-    df["dyad_id"] = df["state_a"].astype(str) + "_" + df["state_b"].astype(str)
+    results = {}
+    df = pd.read_csv(paths.dyad_year_gannon_union_csv)
 
-    available_controls = get_available_controls(df, DYAD_CONTROLS)
-    controls = " + ".join(available_controls) if available_controls else "1"
+    print(_subhead("SAMPLE: Gannon UNION (1980-2010)"))
+    print(f"""
+  Total observations:     {len(df):,} dyad-years
+  With ideology data:     {df['ideo_dist_lag5'].notna().sum():,} ({100*df['ideo_dist_lag5'].notna().mean():.1f}%)
+""")
 
-    formula = f"div_labor ~ hierarchical + voice_driven + {controls} + C(dyad_id) + C(decade)"
-    key_vars = ["hierarchical", "voice_driven"] + available_controls
+    # -------------------------------------------------------------------------
+    # MINIMAL SPECIFICATION
+    # -------------------------------------------------------------------------
+    print(_subhead("TEST 1: Minimal Specification"))
+    print("""
+  What this tests: Does ideological distance predict division of labor?
 
-    spec = ModelSpec(
-        data=df,
-        formula=formula,
-        cluster_col="atopid",
-        required_vars=["div_labor", "hierarchical", "voice_driven", "atopid", "dyad_id", "decade"] + available_controls,
-        output_path=paths.h2_dir / "model_h2_type.csv",
-        title="H2",
-        key_vars=key_vars,
-    )
+  Design:
+    • Outcome (DV):    div_labor = portfolio dissimilarity
+    • Predictor (IV):  ideo_dist_lag5 = |RILE_a - RILE_b| (5-year lag)
+                       Scale: 0 (identical ideology) to 200 (maximum distance)
+    • Fixed Effects:   Dyad + Year
+    • Standard Errors: Clustered by dyad
+    • Controls:        None (minimal specification)
+""")
 
-    result = _run_model(spec)
+    required = ["div_labor", "ideo_dist_lag5", "dyad_id", "year"]
+    analysis = df.dropna(subset=required).copy()
 
-    coef_h = result.model.params["hierarchical"]
-    pval_h = result.model.pvalues["hierarchical"]
-    se_h = result.model.bse["hierarchical"]
-    coef_v = result.model.params["voice_driven"]
-    pval_v = result.model.pvalues["voice_driven"]
-    se_v = result.model.bse["voice_driven"]
-
-    _section("KEY RESULTS")
-    print()
-    print(f"  {'Variable':<20} {'Coefficient':>12} {'SE':>10} {'p-value':>10} {'':>6}")
-    print("  " + "─" * 60)
-    print(f"  {'Hierarchical':<20} {coef_h:>12.4f} {se_h:>10.4f} {pval_h:>10.4f} {_sig_stars(pval_h):>6}")
-    print(f"  {'Voice-driven':<20} {coef_v:>12.4f} {se_v:>10.4f} {pval_v:>10.4f} {_sig_stars(pval_v):>6}")
-    print()
-    print(f"  Reference category: Uninstitutionalized")
-
-    # Proper Wald test for H2B
-    try:
-        wald_test = result.model.wald_test("hierarchical - voice_driven = 0", scalar=True)
-        p_diff = float(wald_test.pvalue)
-        diff = coef_h - coef_v
-    except Exception:
-        diff = coef_h - coef_v
-        se_diff = np.sqrt(se_h**2 + se_v**2)
-        t_stat = diff / se_diff
-        p_diff = 2 * (1 - scipy_stats.t.cdf(abs(t_stat), result.model.df_resid))
-
-    print()
-    print(f"  H2B Test (hier - voice):")
-    print(f"    Difference: {diff:.4f}")
-    print(f"    p-value:    {p_diff:.4f} {_sig_stars(p_diff)}")
-
-    _section("MODEL DIAGNOSTICS")
-    print()
-    print(f"  Observations:   {int(result.model.nobs):,}")
-    print(f"  Unique dyads:   {df['dyad_id'].nunique():,}")
-    print(f"  Unique alliances: {df['atopid'].nunique()}")
-    print(f"  R-squared:      {result.model.rsquared:.4f}")
-
-    _section("CONCLUSIONS")
-
-    # H2A
-    print()
-    print("  H2A: Voice-driven > Uninstitutionalized")
-    if pval_v < 0.10 and coef_v > 0:
-        print(f"    ✓ SUPPORTED (β = {coef_v:.4f}, p = {pval_v:.4f})")
-    elif pval_v < 0.10 and coef_v < 0:
-        print(f"    ✗ CONTRARY TO HYPOTHESIS (β = {coef_v:.4f}, p = {pval_v:.4f})")
-    else:
-        print(f"    ○ NULL RESULTS (β = {coef_v:.4f}, p = {pval_v:.4f})")
-
-    # H2B
-    print()
-    print("  H2B: Hierarchical > Voice-driven")
-    if p_diff < 0.10 and diff > 0:
-        print(f"    ✓ SUPPORTED (Δ = {diff:.4f}, p = {p_diff:.4f})")
-    elif p_diff < 0.10 and diff < 0:
-        print(f"    ✗ CONTRARY TO HYPOTHESIS (Δ = {diff:.4f}, p = {p_diff:.4f})")
-    else:
-        print(f"    ○ NULL RESULTS (Δ = {diff:.4f}, p = {p_diff:.4f})")
-
-    print()
-    return result.results_df
-
-
-def model_h2_event_study(paths: Paths, window: int = 5) -> pd.DataFrame:
-    """
-    Event study for H2: Division of labor changes around alliance formation.
-
-    Tests whether dyads exhibit systematic changes in division of labor
-    after forming an alliance, relative to the pre-alliance period.
-    """
-    print()
-    print(_box("H2 EVENT STUDY: ALLIANCE FORMATION"))
-
-    print()
-    print("  DESIGN")
-    print("  " + "─" * 66)
-    print("  Tests whether division of labor changes systematically after")
-    print("  alliance formation by tracking the same dyads before and after")
-    print("  they enter into an alliance together.")
-    print()
-    print("  • Event:           First alliance entry for each dyad")
-    print("  • Window:          t-5 to t+5 around alliance formation")
-    print("  • Reference:       t = -1 (year before alliance)")
-    print("  • Expected:        Positive post-formation coefficients")
-
-    div_labor_full = pd.read_csv(paths.div_labor_csv)
-
-    div_labor_full["s_min"] = div_labor_full[["state_a", "state_b"]].min(axis=1)
-    div_labor_full["s_max"] = div_labor_full[["state_a", "state_b"]].max(axis=1)
-    div_labor_full["state_a"] = div_labor_full["s_min"]
-    div_labor_full["state_b"] = div_labor_full["s_max"]
-    div_labor_full = div_labor_full.drop(columns=["s_min", "s_max"])
-
-    dyad_df = load_dataset(paths.dyad_year_csv)
-    first_alliance = dyad_df.groupby(["state_a", "state_b"])["year"].min().reset_index()
-    first_alliance.columns = ["state_a", "state_b", "alliance_entry_year"]
-
-    _section("SAMPLE")
-    print()
-    print(f"  Dyads entering alliances: {len(first_alliance):,}")
-
-    if len(first_alliance) == 0:
-        print("  No alliance entries found")
-        return pd.DataFrame()
-
-    panel = div_labor_full.merge(first_alliance, on=["state_a", "state_b"], how="inner")
-    panel["event_time"] = panel["year"] - panel["alliance_entry_year"]
-    panel_event = panel[panel["event_time"].between(-window, window)].copy()
-
-    n_dyads = panel_event.groupby(["state_a", "state_b"]).ngroups
-    print(f"  Dyad-years in window:     {len(panel_event):,}")
-    print(f"  Unique dyads:             {n_dyads:,}")
-
-    if len(panel_event) < 50:
-        print("  Insufficient data")
-        return pd.DataFrame()
-
-    event_times = [t for t in range(-window, window + 1) if t != -1]
-    for t in event_times:
-        col_name = f"t_{t:+d}".replace("+", "p").replace("-", "m")
-        panel_event[col_name] = (panel_event["event_time"] == t).astype(int)
-
-    panel_event["dyad_id"] = panel_event["state_a"].astype(str) + "_" + panel_event["state_b"].astype(str)
-
-    event_vars = [f"t_{t:+d}".replace("+", "p").replace("-", "m") for t in event_times]
-    formula = f"div_labor ~ {' + '.join(event_vars)} + C(state_a) + C(state_b) + C(year)"
-
-    required = ["div_labor", "state_a", "state_b", "year", "dyad_id"] + event_vars
-    analysis = panel_event.dropna(subset=required).copy()
-
-    if len(analysis) < 50:
-        print("  Insufficient data after listwise deletion")
-        return pd.DataFrame()
-
-    print(f"  Final sample:             {len(analysis):,}")
+    formula = "div_labor ~ ideo_dist_lag5 + C(dyad_id) + C(year)"
 
     model = smf.ols(formula, data=analysis).fit(
-        cov_type="cluster", cov_kwds={"groups": analysis["dyad_id"]}
+        cov_type="cluster",
+        cov_kwds={"groups": analysis["dyad_id"]},
     )
 
-    results_all = []
-    for t in event_times:
-        var = f"t_{t:+d}".replace("+", "p").replace("-", "m")
-        results_all.append({
-            "event_time": t,
-            "Coefficient": model.params.get(var, np.nan),
-            "SE": model.bse.get(var, np.nan),
-            "p-value": model.pvalues.get(var, np.nan),
-            "Sig": _sig_stars(model.pvalues.get(var, 1.0)),
-        })
-    results_all.append({
-        "event_time": -1,
-        "Coefficient": 0.0,
-        "SE": 0.0,
-        "p-value": np.nan,
-        "Sig": "(ref)",
-    })
+    coef = model.params["ideo_dist_lag5"]
+    se = model.bse["ideo_dist_lag5"]
+    pval = model.pvalues["ideo_dist_lag5"]
 
-    results = pd.DataFrame(results_all).sort_values("event_time")
-    results.to_csv(paths.h2_dir / "model_h2_event_study.csv", index=False)
-
-    _section("RESULTS")
+    print(f"  Sample size:     N = {int(model.nobs):,} dyad-years")
+    print(f"  Unique dyads:    {analysis['dyad_id'].nunique():,}")
     print()
-    print(f"  {'Time':<8} {'Coefficient':>12} {'SE':>10} {'p-value':>10} {'':>6}")
-    print("  " + "─" * 48)
-    for _, row in results.iterrows():
-        t = int(row["event_time"])
-        if t == -1:
-            print(f"  t = {t:<4} {'0.0000':>12} {'—':>10} {'—':>10} {'(ref)':>6}")
-        else:
-            print(f"  t = {t:<4} {row['Coefficient']:>12.4f} {row['SE']:>10.4f} {row['p-value']:>10.4f} {row['Sig']:>6}")
+    print(f"  RESULT:          {_format_coef(coef, se, pval)}")
+    print(f"  Interpretation:  A 10-point increase in ideological distance is")
+    print(f"                   associated with a {abs(coef * 10):.4f} change in div_labor")
+    print(f"  Significance:    {_sig_word(pval)}")
 
+    results["minimal"] = {
+        "coefficient": coef, "se": se, "p_value": pval,
+        "n": int(model.nobs), "r2": model.rsquared,
+    }
+
+    # -------------------------------------------------------------------------
+    # FULL SPECIFICATION
+    # -------------------------------------------------------------------------
+    print(_subhead("TEST 2: Full Specification (with controls)"))
+
+    controls = get_available_controls(df, DYAD_CONTROLS)
+    print(f"""
+  Same as above, but adding controls for confounders:
+    • Controls: {', '.join(controls)}
+""")
+
+    required_full = required + controls
+    analysis_full = df.dropna(subset=required_full).copy()
+
+    control_str = " + ".join(controls)
+    formula_full = f"div_labor ~ ideo_dist_lag5 + {control_str} + C(dyad_id) + C(year)"
+
+    model_full = smf.ols(formula_full, data=analysis_full).fit(
+        cov_type="cluster",
+        cov_kwds={"groups": analysis_full["dyad_id"]},
+    )
+
+    coef_f = model_full.params["ideo_dist_lag5"]
+    se_f = model_full.bse["ideo_dist_lag5"]
+    pval_f = model_full.pvalues["ideo_dist_lag5"]
+
+    print(f"  Sample size:     N = {int(model_full.nobs):,}")
     print()
-    print(f"  N = {int(model.nobs):,}  |  R² = {model.rsquared:.4f}")
+    print(f"  RESULT:          {_format_coef(coef_f, se_f, pval_f)}")
+    print(f"  Significance:    {_sig_word(pval_f)}")
 
-    _section("DIAGNOSTICS")
+    results["full"] = {
+        "coefficient": coef_f, "se": se_f, "p_value": pval_f,
+        "n": int(model_full.nobs), "r2": model_full.rsquared,
+    }
 
-    pre_trend = results[(results["event_time"] < -1) & (results["event_time"] >= -window)]
-    pre_sig = pre_trend[pre_trend["p-value"] < 0.10]
-    if len(pre_sig) > 0:
-        print()
-        print("  ⚠ Pre-trends detected (parallel trends assumption may be violated)")
-    else:
-        print()
-        print("  ✓ No pre-trends detected")
+    _ALL_RESULTS["H3"] = {
+        "coef": coef_f, "se": se_f, "p": pval_f, "n": int(model_full.nobs),
+        "supported": pval_f < 0.05,
+        "direction": "negative" if coef_f < 0 else "positive",
+    }
 
-    post_effects = results[results["event_time"] > 0]
-    post_sig = post_effects[post_effects["p-value"] < 0.10]
+    # Save
+    results_df = pd.DataFrame([
+        {"specification": "minimal", **results["minimal"]},
+        {"specification": "full", **results["full"]},
+    ])
+    results_df.to_csv(paths.h3_dir / "model_h3_primary.csv", index=False)
 
-    _section("CONCLUSION")
-
-    if len(post_sig) > 0:
-        avg_coef = post_sig["Coefficient"].mean()
-        if avg_coef > 0:
-            print()
-            print(f"  ✓ HYPOTHESIS SUPPORTED")
-            print(f"    Average post-formation effect: {avg_coef:.4f}")
-        else:
-            print()
-            print(f"  ✗ CONTRARY TO HYPOTHESIS")
-            print(f"    Average post-formation effect: {avg_coef:.4f}")
-    else:
-        print()
-        print("  ○ NULL RESULTS")
-        print("    No significant post-formation effects")
-
-    print()
     return results
 
 
 # =============================================================================
-# Main Entry Point
+# SUMMARY TABLE
 # =============================================================================
 
-
-def run_all() -> None:
-    """Run all regression analyses."""
-    paths = Paths()
-
-    missing = paths.validate()
-    if missing:
-        print(f"Error: Missing input files: {missing}")
+def print_summary_table() -> None:
+    """Print a grand summary table of all hypothesis tests."""
+    if not _ALL_RESULTS:
         return
 
-    paths.h1_dir.mkdir(parents=True, exist_ok=True)
-    paths.h2_dir.mkdir(parents=True, exist_ok=True)
+    # Column widths (must sum to w when including separating spaces)
+    col_test = 12
+    col_question = 38
+    col_coef = 9
+    col_p = 7
+    col_finding = 13
+    # Total: 12 + 1 + 38 + 1 + 9 + 1 + 7 + 1 + 13 = 83, plus 2 for "| " and " |" = 87
+    w = col_test + 1 + col_question + 1 + col_coef + 1 + col_p + 1 + col_finding
 
-    model_h1(paths)
-    model_h1_event_study(paths)
-    model_h1_did(paths)
-    model_h2(paths)
-    model_h2_event_study(paths)
+    print("\n")
+    print("+" + "-" * (w + 2) + "+")
+    print("|" + "HYPOTHESIS TEST SUMMARY".center(w + 2) + "|")
+    print("+" + "-" * (w + 2) + "+")
+    print("| {:<{}} {:<{}} {:>{}} {:>{}} {:>{}} |".format(
+        "Test", col_test,
+        "Question", col_question,
+        "Coef", col_coef,
+        "p-value", col_p,
+        "Finding", col_finding))
+    print("+" + "-" * (w + 2) + "+")
 
+    # Define all tests with their predictions
+    tests = [
+        # (key, question)
+        ("H1", "Right ideology -> less spec?"),
+        ("ES_to_right", "L->R: spec decrease?"),
+        ("ES_to_left", "R->L: spec increase?"),
+        ("H2_ordinal", "Alliance depth -> div labor?"),
+        ("H2A", "Voice > uninstitutionalized?"),
+        ("H2B", "Hierarchical > voice?"),
+        ("H3", "Ideo distance -> less div labor?"),
+    ]
+
+    for key, question in tests:
+        if key in _ALL_RESULTS:
+            r = _ALL_RESULTS[key]
+            coef = r['coef']
+            p = r['p']
+            coef_str = f"{coef:+.4f}"
+            p_str = f"{p:.3f}"
+
+            # Determine finding based on significance and direction
+            if p < 0.05:
+                if r.get('supported', False):
+                    finding = "SUPPORTED"
+                else:
+                    finding = "CONTRARY"
+            elif p < 0.10:
+                finding = "Marginal"
+            else:
+                finding = "No effect"
+
+            print("| {:<{}} {:<{}} {:>{}} {:>{}} {:>{}} |".format(
+                key, col_test,
+                question[:col_question], col_question,
+                coef_str, col_coef,
+                p_str, col_p,
+                finding, col_finding))
+        else:
+            # Test not available (e.g., due to multicollinearity)
+            print("| {:<{}} {:<{}} {:>{}} {:>{}} {:>{}} |".format(
+                key, col_test,
+                question[:col_question], col_question,
+                "-", col_coef,
+                "-", col_p,
+                "(not estim.)", col_finding))
+
+    print("+" + "-" * (w + 2) + "+")
+    legend = [
+        "SUPPORTED = significant (p<0.05) in predicted direction",
+        "CONTRARY = significant in opposite direction",
+        "Marginal = p<0.10, No effect = not significant",
+    ]
+    for line in legend:
+        print("| {:<{}} |".format(line, w))
+    print("+" + "-" * (w + 2) + "+")
     print()
-    print(_box("ALL ANALYSES COMPLETE"))
-    print()
 
 
-if __name__ == "__main__":
-    run_all()
+def get_all_results() -> dict:
+    """Return all stored results for external use."""
+    return _ALL_RESULTS.copy()

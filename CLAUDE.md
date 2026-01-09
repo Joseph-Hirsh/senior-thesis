@@ -1,341 +1,658 @@
-# Claude Context for Senior Thesis Project
+# Military Specialization & Alliance Institutions Study
 
-## Project Overview
+## Executive Summary
 
-This is a political science senior thesis examining how **ruling party ideology** and **alliance institutional design** affect **military specialization** among democratic states.
+This project examines how **domestic politics** and **international institutions** shape military force structure among democratic states. It tests three hypotheses:
 
-## Research Questions & Hypotheses
+1. **H1**: Right-of-center ruling parties lead to *less* military specialization (broader portfolios)
+2. **H2**: More institutionalized alliances lead to *greater* division of labor between partners
+3. **H3**: Ideologically similar alliance partners exhibit *greater* division of labor
 
-| ID | Hypothesis | Expected Effect | Unit of Analysis |
-|----|------------|-----------------|------------------|
-| H1 | Right-of-center parties → less specialization | β < 0 | Country-year |
-| H2 | Alliance type → division of labor | (see H2A/H2B) | Dyad-year |
-| H2A | Voice-driven > Uninstitutionalized | β > 0 | Dyad-year |
-| H2B | Hierarchical > Voice-driven | β_hier > β_voice | Dyad-year |
+The analysis uses panel data methods (two-way fixed effects, clustered standard errors) to identify effects while controlling for unobserved heterogeneity.
 
-## Statistical Best Practices Implemented
-
-### H1 Lag Specifications
-- **H1 tests 10 lag specifications** (1-10 years)
-- Each lag tests a distinct causal mechanism (different procurement lead times)
-- No multiple comparison correction applied (lags are independent tests)
-
-### Proper Hypothesis Testing
-- **H2B Wald test** uses proper covariance matrix via `model.wald_test()`
-- This accounts for correlation between hierarchical and voice_driven coefficients
-- Previous implementation incorrectly assumed independence (overstated SE)
-
-### Clustering Structure
-- **H1**: Clustered by country (accounts for serial correlation)
-- **H2**: Clustered by alliance (atopid)
-- Within-dyad correlation handled by dyad fixed effects
-
-## Key Design Decisions
-
-### Why Two Datasets?
-- **Country-year** (H1): Tests individual state policy choices driven by ruling party ideology
-- **Dyad-year** (H2): Tests division of labor between alliance partners based on institution type
-
-### Sample Restrictions
-All analyses restricted to **democracies** because:
-1. R&R dataset contains only democratic dyads
-2. Manifesto Project covers democracies
-3. Ruling party ideology more meaningful in competitive democracies
+---
 
 ## Data Sources
 
-| File | Contents | Key Variables |
-|------|----------|---------------|
-| `03_DF-full.rds` | Gannon specialization | `spec_stand`, `country_code_cow`, `year` |
-| `MPDataset_MPDS2025a.csv` | Manifesto ideology | `rile`, `country`, `edate` |
-| `partiestoanallianceR&R.dta` | R&R alliance data | `inst`, `state_a`, `state_b`, controls |
-| `atop5_1m.csv` | ATOP membership | `atopid`, `member`, `yrent`, `yrexit` |
-| `rDMC_wide_v1.rds` | Military capabilities (69 types) | `ccode`, `year`, + 69 technology columns |
-| `division_of_labor.csv` | Pairwise portfolio dissimilarity | `state_a`, `state_b`, `year`, `div_labor` |
+### Input Datasets
+
+| File | Source | Contents | Coverage |
+|------|--------|----------|----------|
+| `03_DF-full.rds` | Gannon (2023) | Military specialization scores | 1970-2014 |
+| `MPDataset_MPDS2025a.csv` | Manifesto Project | Party ideology (RILE scores) | 1945-2023 |
+| `atop5_1m.csv` | ATOP v5 | Alliance membership & provisions | 1815-2018 |
+| `division_of_labor.csv` | Computed from rDMC | Pairwise portfolio dissimilarity | 1970-2014 |
+| `contdird.csv` | COW | Direct contiguity | 1816-2016 |
+| `NMC-60-wsupplementary.csv` | COW NMC 6.0 | Military expenditure | 1816-2016 |
+| `DCAD-v1.0-dyadic.csv` | DCAD | Defense Cooperation Agreements | **1980-2010 only** |
+
+### CRITICAL: DCAD Coverage Window
+
+**DCAD only covers 1980-2010.** Outside this window, DCA status is **UNKNOWN**, not absent.
+
+- **Years 1980-2010**: `any_dca_link` = 0 or 1 (observed)
+- **Years < 1980 or > 2010**: `any_dca_link` = NA (unknown status)
+
+The primary H2/H3 analyses use the **1980-2010 aligned sample** where DCAD is observed. Legacy specifications using 1970-2014 treat out-of-window DCA as NA.
+
+### Constructed Datasets
+
+```
+results/
+├── master_country_year.csv                  # H1 analysis dataset (1970-2014)
+├── master_dyad_year.csv                     # Full dyad-year panel (1970-2014, DCA=NA outside 1980-2010)
+├── master_dyad_year_h3.csv                  # H3 dataset with ideology vars (1970-2014)
+├── master_dyad_year_gannon_1980_2010.csv    # ATOP-only aligned sample (1980-2010)
+└── master_dyad_year_gannon_union_1980_2010.csv  # PRIMARY: ATOP OR DCAD aligned (1980-2010)
+```
+
+**Key distinction:**
+- `master_dyad_year.csv`: Full panel, but `any_dca_link = NA` outside 1980-2010
+- `master_dyad_year_gannon_1980_2010.csv`: ATOP-only dyads restricted to 1980-2010
+- `master_dyad_year_gannon_union_1980_2010.csv`: **PRIMARY SAMPLE** — Dyads in ATOP OR DCAD (1980-2010)
+
+### Gannon UNION Sample Methodology
+
+The **primary H2/H3 analyses** use the Gannon UNION sample, which follows Gannon's approach exactly:
+
+**Sample Construction:**
+1. **Aligned dyad-years** are included if the dyad shares:
+   - An ATOP **offense or defense** pact (excludes neutrality, non-aggression, consultation-only)
+   - **OR** a Defense Cooperation Agreement (DCAD)
+2. This captures meaningful security cooperation where division of labor is relevant
+3. Window restricted to **1980-2010** because DCAD is observed only in that period
+
+**IMPORTANT: Offense/Defense Filter**
+- Only ATOP alliances with `defense == 1` OR `offense == 1` are included
+- Excludes: neutrality pacts, non-aggression pacts, consultation-only agreements
+- These excluded types don't involve the operational coordination where specialization matters
+
+**Vertical Integration Coding:**
+- For dyad-years with ATOP alliance: `vertical_integration = max(inst)` across all shared alliances
+  - 3 = Hierarchical
+  - 2 = Voice-driven
+  - 1 = Uninstitutionalized
+- For DCA-only dyad-years (DCAD but no ATOP): `vertical_integration = 0`
+  - No ATOP treaty provisions to code, so institutionalization is undefined/minimal
+
+**Multiple Alliances:**
+- When a dyad shares multiple ATOP alliances in the same year, take the **maximum** institutionalization score
+- This follows the logic that the most institutionalized arrangement sets the coordination ceiling
+
+**Regression Specifications:**
+- **Fixed Effects**: Dyad FE + Decade FE (NO country FE on top)
+- **Ordinal**: `vertical_integration` as continuous (0, 1, 2, 3)
+- **Categorical**: `hierarchical` + `voice_driven` + `uninstitutionalized` (reference = DCA-only)
+  - **IMPORTANT**: Do NOT pool uninstitutionalized ATOP with DCA-only — they are distinct categories
+  - Uninst ATOP = formal treaty with minimal provisions; DCA-only = informal cooperation agreement
+
+---
+
+## Variable Definitions
+
+### Dependent Variables
+
+#### Specialization Index (H1)
+
+**Variable**: `spec_y`
+
+**Source**: Gannon (2023), computed from rDMC military technology counts
+
+**Interpretation**: Higher values = more concentrated military portfolio (fewer capability types). The variable is standardized in the source data.
+
+#### Division of Labor (H2, H3)
+
+**Variable**: `div_labor`
+
+**Formula**:
+```
+For countries i and j with portfolio shares p_im and p_jm across M technology types:
+  overlap = Σ min(p_im, p_jm) for m = 1 to M
+  div_labor = 1 - overlap
+```
+
+**Range**: 0 (identical portfolios) to 1 (non-overlapping portfolios)
+
+**Interpretation**: Higher values = partners have more complementary/different military portfolios.
+
+### Independent Variables
+
+#### Ideology (H1)
+
+**Variable**: `rile` (Manifesto Project Right-Left Index)
+
+**Range**: -100 (extreme left) to +100 (extreme right)
+
+**Lagged version**: `rile_lag5` — the RILE score from 5 years prior. Created by:
+```python
+df["rile_lag5"] = df.groupby("country_code_cow")["rile"].shift(5)
+```
+
+**Binary version**: `right_of_center` — equals 1 if RILE ≥ 10, equals 0 if RILE ≤ -10, missing otherwise.
+
+#### Alliance Institutionalization (H2)
+
+**CRITICAL PROVENANCE CONSTRAINT**: Alliance institutionalization (`inst`) is **ALWAYS recalculated from raw ATOP treaty provisions** using Leeds & Anac (2005) logic. **NEVER use pre-coded inst from external sources.** NO pre-coded alliance-type variables from RR (Rapport-Rathbun) or any external governance dataset are used.
+
+---
+
+##### Variable Type
+
+`inst` is a **THREE-CATEGORY NOMINAL** variable (not ordinal):
+- **1** = Uninstitutionalized
+- **2** = Voice-driven
+- **3** = Hierarchical
+
+Interpret categories as **mutually exclusive governance types**, not additive levels. Authority-based governance dominates voice; voice dominates absence.
+
+##### ATOP Variables Used
+
+**Required (all must be present)**:
+`INTCOM`, `MILCON`, `BASE`, `SUBORD`, `ORGAN1`, `ORGPURP1`, `ORGAN2`, `ORGPURP2`, `MILAID`, `CONTRIB`
+
+**Forbidden (must NOT be used)**:
+`CONWTIN`, `MEDARB`, `ARMRED`, `ACQTERR`, `DIVGAINS`, `DEMWITH`
+
+##### Helper Variable
+
+```
+mil_org_present = (ORGAN1 in {1,2,3} AND ORGPURP1 == 1) OR (ORGAN2 in {1,2,3} AND ORGPURP2 == 1)
+```
+
+##### Classification Logic (applied in order)
+
+**(3) HIERARCHICAL** — Code as hierarchical if the alliance includes ANY provision that creates authority, command, or structural control of one member by another:
+- `INTCOM == 1` — Integrated command in peacetime and wartime
+- `MILCON == 3` — Common defense policy (doctrine, training, procurement, joint planning)
+- `BASE > 0` — Joint or unilateral troop placement / basing
+- `SUBORD in {1, 2}` — Explicit subordination of one party's forces
+
+*Note*: Hierarchical alliances may also include consultation, coordination, organizations, training, or contribution rules; they are classified as hierarchical because authority overrides voice.
+
+**(2) VOICE-DRIVEN** — Code as voice-driven **ONLY IF** the alliance is NOT hierarchical AND includes at least one coordination or consultation mechanism:
+- `MILCON == 2` — Peacetime military consultation
+- `mil_org_present` — Formal military coordinating organization present
+- `MILAID in {3, 4}` — Training and/or technology transfer
+- `CONTRIB == 1` — Specified troop, supply, or funding contributions
+
+**(1) UNINSTITUTIONALIZED** — Code as uninstitutionalized if the alliance includes NONE of the hierarchical or voice-driven provisions above.
+
+##### Missing Value Handling
+
+Missing treaty provisions are treated as **0 (provision absent)** following ATOP coding conventions. This is explicitly documented behavior, not silent coercion.
+
+##### Code Implementation
+
+The inst variable is calculated in `_build_institutionalization()` in `build_datasets.py`. The function includes defensive assertions that:
+1. Verify all required ATOP provision columns exist
+2. Reject any pre-coded `inst` column in the input
+3. Warn if forbidden columns are present
+4. Assert output values are only {1, 2, 3}
+
+---
+
+**In regressions**: Binary dummies `hierarchical` (=1 if inst==3) and `voice_driven` (=1 if inst==2). Reference category is uninstitutionalized.
+
+**Provenance assertion**: The pipeline includes fail-fast checks (`_assert_no_forbidden_columns`) that will raise `ValueError` if any RR-derived columns are detected in the output datasets.
+
+#### Ideological Distance (H3)
+
+**Variable**: `ideo_dist`
+
+**Formula**: `ideo_dist = |rile_a - rile_b|`
+
+**Lagged version**: `ideo_dist_lag5` — created by:
+```python
+df["ideo_dist_lag5"] = df.groupby("dyad_id")["ideo_dist"].shift(5)
+```
+
+### Control Variables
+
+#### Country-Level (H1)
+
+| Variable | Definition |
+|----------|------------|
+| `lngdp` | Log GDP from World Development Indicators |
+| `cinc` | COW Composite Index of National Capability |
+| `war5_lag` | Binary: interstate war in past 5 years |
+| `in_hierarchical` | Binary: in any hierarchical alliance |
+| `in_voice` | Binary: in any voice-driven alliance |
+| `in_uninst` | Binary: in any uninstitutionalized alliance |
+
+#### Dyad-Level (H2, H3)
+
+| Variable | Definition |
+|----------|------------|
+| `contiguous` | Binary: land contiguity (COW conttype = 1) |
+| `lngdp_ratio` | `min(lngdp_a, lngdp_b) / max(lngdp_a, lngdp_b)` — bounded in [0, 1] |
+| `milex_ratio` | `min(milex_a, milex_b) / max(milex_a, milex_b)` — bounded in [0, 1] |
+
+**Note on bounded ratios**: Following Gannon (2023), we use min/max ratios that are bounded in [0, 1] where 1 = equal partners. This avoids extreme values that unbounded ratios (max/min) can produce.
+
+---
+
+## Data Lineage: Variable Sources
+
+**CRITICAL**: Alliance institutionalization is coded from ATOP provisions only (Leeds & Anac logic). No pre-coded alliance-type variables from RR (or any external governance dataset) are used.
+
+| Variable | Source | Derivation |
+|----------|--------|------------|
+| `inst` / `inst_max` | ATOP v5 | Leeds & Anac (2005) rules → max(inst) across shared alliances |
+| `hierarchical` | Derived | `= 1 if inst == 3` |
+| `voice_driven` | Derived | `= 1 if inst == 2` |
+| `vertical_integration` | Derived | `= max(inst)` for ATOP, `= 0` for DCA-only |
+| `any_dca_link` | DCAD v1.0 | Binary: DCA agreement exists (1980-2010 only) |
+| `any_atop_link` | ATOP v5 | Binary: share ATOP offense/defense pact |
+| `div_labor` | Computed from rDMC | Pairwise portfolio dissimilarity |
+| `contiguous` | COW contdird | Binary: land contiguity |
+| `lngdp_ratio` | World Development Indicators | Bounded min/max GDP ratio |
+| `milex_ratio` | COW NMC 6.0 | Bounded min/max military expenditure ratio |
+| `rile` | Manifesto Project | Left-right ideology score |
+| `ideo_dist` | Derived | `= |rile_a - rile_b|` |
+
+---
+
+## Statistical Tests: Detailed Procedures
+
+### H1: Ideology → Specialization
+
+#### Primary Test: `model_h1_master()`
+
+**Research Question**: Does a country becoming more right-leaning correspond to less military specialization?
+
+**Estimation Procedure**:
+1. Load `master_country_year.csv`
+2. Define required variables: `spec_y`, `rile_lag5`, `country_code_cow`, `year`, plus available controls (`lngdp`, `cinc`, `war5_lag`)
+3. Drop rows with any missing values in required variables (listwise deletion)
+4. Estimate OLS regression using `statsmodels.formula.api.ols()`
+
+**Exact Formula**:
+```
+spec_y ~ rile_lag5 + lngdp + cinc + war5_lag + C(country_code_cow) + C(year)
+```
+
+**Standard Errors**: Clustered by `country_code_cow` using:
+```python
+model.fit(cov_type="cluster", cov_kwds={"groups": analysis["country_code_cow"]})
+```
+
+**Hypothesis Test**: Two-sided t-test on coefficient of `rile_lag5`. Expected: β < 0.
+
+**Output**: `results/h1/model_h1_master.csv` containing coefficient, SE, t-stat, p-value, 95% CI, N, N_countries, R².
+
+---
+
+#### Robustness A: Placebo Lead Test
+
+**Purpose**: Test for reverse causality. If ideology causes specialization (with a lag), then FUTURE ideology should NOT predict CURRENT specialization.
+
+**Formula**:
+```
+spec_y ~ rile_lead1 + lngdp + cinc + war5_lag + C(country_code_cow) + C(year)
+```
+
+Where `rile_lead1` is ideology from the NEXT year:
+```python
+df["rile_lead1"] = df.groupby("country_code_cow")["rile"].shift(-1)
+```
+
+**Interpretation**: If p-value < 0.10, the placebo FAILS (suggests confounding or reverse causality). If p-value ≥ 0.10, the placebo PASSES.
+
+---
+
+#### Robustness B: Binary Ideology
+
+**Purpose**: Test whether results hold with a binary left/right classification instead of continuous RILE.
+
+**Formula**:
+```
+spec_y ~ roc_lag5 + lngdp + cinc + war5_lag + C(country_code_cow) + C(year)
+```
+
+Where `roc_lag5` is a 5-year lag of `right_of_center`:
+```python
+df["roc_lag5"] = df.groupby("country_code_cow")["right_of_center"].shift(5)
+```
+
+---
+
+#### Robustness C: Control Sensitivity
+
+**Purpose**: Test whether results are sensitive to control variable inclusion.
+
+**Specifications compared**:
+1. No controls: `spec_y ~ rile_lag5 + C(country_code_cow) + C(year)`
+2. With controls: `spec_y ~ rile_lag5 + lngdp + cinc + war5_lag + C(country_code_cow) + C(year)`
+3. Extended: `spec_y ~ rile_lag5 + lngdp + cinc + war5_lag + in_alliance + C(country_code_cow) + C(year)`
+
+---
+
+#### Event Study: `model_h1_event_study()`
+
+**Purpose**: Test whether specialization changes systematically around ideology transitions.
+
+**Event Definition**: A "transition to right" occurs when a country's RILE changes from negative to non-negative. A "transition to left" is the opposite.
+
+**Procedure**:
+1. Identify all ideology transitions in the data
+2. For countries with transitions, use only their FIRST transition
+3. Compute `event_time = year - event_year`
+4. Keep observations where `event_time` is between -5 and +5
+5. Create dummy variables for each event time (excluding t = -1 as reference)
+6. Estimate:
+```
+spec_y ~ t_m5 + t_m4 + t_m3 + t_m2 + t_p0 + t_p1 + t_p2 + t_p3 + t_p4 + t_p5
+         + controls + C(country_code_cow) + C(year)
+```
+
+**Standard Errors**: Clustered by country.
+
+**Interpretation**:
+- Pre-period coefficients (t < -1) test parallel trends. If significant, the design may be compromised.
+- Post-period coefficients (t ≥ 0) estimate the treatment effect at each time point relative to t = -1.
+
+---
+
+#### Difference-in-Differences: `model_h1_did()`
+
+**Purpose**: A more parsimonious estimate of the average post-transition effect.
+
+**Formula**:
+```
+spec_y ~ post + controls + C(country_code_cow) + C(year)
+```
+
+Where `post = 1` if `event_time >= 0`, else 0.
+
+---
+
+### H2: Alliance Type → Division of Labor
+
+#### Primary Test: `model_h2()`
+
+**Research Question**: Do more institutionalized alliances promote greater division of labor between partners?
+
+**Estimation Procedure**:
+1. Load `master_dyad_year.csv`
+2. Define required variables: `div_labor`, `hierarchical`, `voice_driven`, `dyad_id`, `decade`, plus available controls (`contiguous`, `lngdp_ratio`, `milex_ratio`)
+3. Drop rows with any missing values (listwise deletion)
+4. Estimate OLS regression
+
+**Exact Formula**:
+```
+div_labor ~ hierarchical + voice_driven + contiguous + lngdp_ratio + milex_ratio
+            + C(dyad_id) + C(decade)
+```
+
+**Standard Errors**: Clustered by `dyad_id` using:
+```python
+model.fit(cov_type="cluster", cov_kwds={"groups": analysis["dyad_id"]})
+```
+
+**Hypothesis Tests**:
+- **H2A**: t-test on `voice_driven`. Expected: β > 0 (voice-driven > uninstitutionalized)
+- **H2B**: Wald test on `hierarchical - voice_driven = 0`. Expected: difference > 0 (hierarchical > voice-driven)
+
+The Wald test is performed using:
+```python
+model.wald_test("hierarchical - voice_driven = 0", scalar=True)
+```
+
+**Output**: `results/h2/model_h2_type.csv`
+
+---
+
+#### Event Study: `model_h2_event_study()`
+
+**Purpose**: Test whether division of labor changes around alliance formation.
+
+**Procedure**:
+1. Load full division of labor data (not just alliance sample)
+2. Identify first alliance entry year for each dyad
+3. Compute event time relative to first entry
+4. Keep observations in ±5 year window
+5. Estimate event study regression with state_a FE, state_b FE, year FE
+
+**Note**: This uses the broader division of labor dataset to capture pre-alliance periods, not just the alliance dyad-year panel.
+
+---
+
+### H3: Ideological Symmetry → Division of Labor
+
+#### Primary Test: `model_h3_master()`
+
+**Research Question**: Does ideological similarity between alliance partners promote greater division of labor?
+
+**Two Specifications**:
+
+**Minimal**:
+```
+div_labor ~ ideo_dist_lag5 + C(dyad_id) + C(year)
+```
+
+**Full** (with Gannon-style controls):
+```
+div_labor ~ ideo_dist_lag5 + contiguous + lngdp_ratio + milex_ratio + C(dyad_id) + C(year)
+```
+
+**Key Difference from H2**: H3 uses year FE (not decade FE) because ideological changes operate at a faster timescale than institutional changes.
+
+**Standard Errors**: Clustered by `dyad_id`.
+
+**Hypothesis Test**: t-test on `ideo_dist_lag5`. Expected: β < 0 (greater distance = less division of labor, i.e., similarity promotes coordination).
+
+**Output**: `results/h3/model_h3_master.csv`
+
+---
+
+#### Robustness A: Categorical Symmetry
+
+**Purpose**: Test with binary indicator instead of continuous distance.
+
+**Formula**:
+```
+div_labor ~ same_bucket_10_lag5 + controls + C(dyad_id) + C(year)
+```
+
+Where `same_bucket_10_lag5 = 1` if both partners are in the same ideology bucket (both RoC, both LoC, or both Moderate) as of 5 years prior.
+
+---
+
+#### Robustness B: Alliance Type Controls
+
+**Purpose**: Test whether H3 effect persists after controlling for alliance institutionalization.
+
+**Formula**:
+```
+div_labor ~ ideo_dist_lag5 + hierarchical + voice_driven + contiguous + lngdp_ratio + milex_ratio
+            + C(dyad_id) + C(year)
+```
+
+---
+
+#### Robustness C: Exploratory Bucket Effects
+
+**Purpose**: Explore whether specific ideology pairings (both RoC, both LoC, both Moderate) have distinct effects.
+
+**Formula**:
+```
+div_labor ~ both_RoC_lag5 + both_LoC_lag5 + both_Mod_lag5 + controls + C(dyad_id) + C(year)
+```
+
+---
+
+## Critical Data Processing Steps
+
+### Dyad-Year Collapse (H2) — Safe Collapse with Invariance Checks
+
+**Problem**: Some dyads share multiple alliances in the same year, creating duplicate rows.
+
+**Solution**: Following Gannon (2023), we collapse to true dyad-years with **invariance checks**:
+
+**Step 1: Identify column types**
+- **Dyad-year invariant columns**: Must be identical across alliance rows (e.g., `div_labor`, `contiguous`, `lngdp_ratio`, `milex_ratio`, `has_dca`)
+- **Alliance-row columns**: Can vary across rows (e.g., `atopid`, `inst`)
+
+**Step 2: Check invariance before collapse**
+```python
+# For each invariant column, verify nunique(dropna=False) <= 1 within each dyad-year
+_check_invariance(panel, dyad_year_invariant_cols, ["state_a", "state_b", "year"])
+# Raises ValueError with details if any column varies
+```
+
+**Step 3: Collapse with safe aggregation**
+```python
+# Sort so most institutionalized alliance is first
+panel = panel.sort_values(["state_a", "state_b", "year", "inst"], ascending=[True, True, True, False])
+
+# Aggregation rules:
+agg_dict = {
+    "inst": "max",                    # Most institutionalized alliance wins
+    "atopid": ["first", "nunique"],   # atopid_max_inst, n_shared_alliances
+}
+# Invariant columns: "first" (ONLY after invariance check passes)
+for col in check_cols:
+    agg_dict[col] = "first"
+```
+
+**Step 4: Post-collapse assertions**
+- No duplicates on (state_a, state_b, year) AND (dyad_id, year)
+- `n_shared_alliances` is integer >= 0
+
+**Result**: Unique key is now (state_a, state_b, year) rather than (atopid, state_a, state_b, year). The invariance check ensures no silent data corruption from unsafe "first" aggregation.
+
+### Ideology Lag Construction
+
+**Country-level (H1)**:
+```python
+df = df.sort_values(["country_code_cow", "year"])
+df["rile_lag5"] = df.groupby("country_code_cow")["rile"].shift(5)
+```
+
+**Dyad-level (H3)**:
+```python
+df["ideo_dist"] = (df["rile_a"] - df["rile_b"]).abs()
+df = df.sort_values(["dyad_id", "year"])
+df["ideo_dist_lag5"] = df.groupby("dyad_id")["ideo_dist"].shift(5)
+```
+
+### Bounded Ratio Construction
+
+```python
+# GDP ratio (bounded in [0,1])
+lngdp_min = df[["lngdp_a", "lngdp_b"]].min(axis=1)
+lngdp_max = df[["lngdp_a", "lngdp_b"]].max(axis=1)
+df["lngdp_ratio"] = lngdp_min / lngdp_max.replace(0, np.nan)
+
+# Military expenditure ratio (bounded in [0,1])
+milex_min = df[["milex_a", "milex_b"]].min(axis=1)
+milex_max = df[["milex_a", "milex_b"]].max(axis=1)
+df["milex_ratio"] = milex_min / milex_max.replace(0, np.nan)
+```
+
+---
+
+## Fixed Effects and Clustering Summary
+
+| Test | Unit FE | Time FE | Clustering |
+|------|---------|---------|------------|
+| H1 primary | Country (`C(country_code_cow)`) | Year (`C(year)`) | Country |
+| H1 event study | Country | Year | Country |
+| H2 primary | Dyad (`C(dyad_id)`) | Decade (`C(decade)`) | Dyad |
+| H2 event study | State A + State B | Year | Dyad |
+| H3 primary | Dyad (`C(dyad_id)`) | Year (`C(year)`) | Dyad |
+
+---
+
+## Output Files
+
+### H1 Outputs (`results/h1/`)
+
+| File | Contents |
+|------|----------|
+| `model_h1_master.csv` | Primary specification: rile_lag5 coefficient, SE, p-value, CI, N |
+| `model_h1_robustness_placebo.csv` | Placebo test with rile_lead1 |
+| `model_h1_robustness_binary.csv` | Binary ideology (roc_lag5) |
+| `model_h1_robustness_sensitivity.csv` | Control sensitivity comparison |
+| `model_h1_event_study_to_right.csv` | Event study coefficients for left→right transitions |
+| `model_h1_event_study_to_left.csv` | Event study coefficients for right→left transitions |
+
+### H2 Outputs (`results/h2/`)
+
+| File | Contents |
+|------|----------|
+| `model_h2_type.csv` | Primary specification: hierarchical, voice_driven coefficients |
+| `model_h2_event_study.csv` | Event study around alliance formation |
+
+### H3 Outputs (`results/h3/`)
+
+| File | Contents |
+|------|----------|
+| `model_h3_master.csv` | Minimal and Full specifications |
+| `model_h3_robustness_categorical.csv` | Categorical symmetry (same_bucket_10_lag5) |
+| `model_h3_robustness_with_inst.csv` | With alliance type controls |
+| `model_h3_robustness_exploratory.csv` | Both_RoC, Both_LoC, Both_Mod effects |
+
+### Audit Outputs (`results/audit/`)
+
+| File | Contents |
+|------|----------|
+| `sample_attrition.csv` | Stage-by-stage sample flow |
+| `alignment_distribution.csv` | DCA/ATOP indicator distribution |
+| `variable_coverage.csv` | Missingness for key variables |
+| `inst_distribution.csv` | Institution type distribution |
+| `gannon_controls_summary.csv` | Summary statistics for control variables |
+
+---
+
+## Running the Analysis
+
+```bash
+# Full pipeline
+uv run thesisizer
+
+# Individual components
+uv run thesisizer --build    # Build datasets only
+uv run thesisizer --h1       # H1 analyses
+uv run thesisizer --h2       # H2 analyses
+uv run thesisizer --h3       # H3 analyses
+```
+
+---
 
 ## Code Structure
 
 ```
 src/senior_thesis/
-├── __init__.py       # Package initialization
-├── cli.py            # Entry point: thesisizer command
-├── config.py         # Paths, controls, formulas, constants
-├── utils.py          # Data validation helpers
+├── cli.py            # Entry point (thesisizer command)
+├── config.py         # Paths, constants, control variable lists
 ├── build_datasets.py # Dataset construction
-├── descriptives.py   # Summary stats + figures
-├── regressions.py    # Regression models
-└── hypotheses.py     # Orchestrates analyses by hypothesis
+├── descriptives.py   # Summary statistics and figures
+├── regressions.py    # All regression functions
+└── hypotheses.py     # Orchestration (run_h1, run_h2, run_h3)
 ```
-
-## Running the Pipeline
-
-```bash
-uv run thesisizer              # Full pipeline (build + h1 + h2)
-uv run thesisizer --build      # Build datasets only
-uv run thesisizer --h1         # Run H1 analyses (descriptives + regressions)
-uv run thesisizer --h2         # Run H2 analyses
-```
-
-## Configuration (config.py)
-
-Key exports:
-- `Paths`: Dataclass with all file paths (uses absolute paths from package root)
-- `COUNTRY_CONTROLS`: `["lngdp", "cinc", "war5_lag"]`
-- `DYAD_CONTROLS`: Dyad-level control variables
-- `FORMULAS`: Regression formula templates with `{controls}` placeholder
-- `VARIABLE_MAP`: Source column → analysis variable name mapping
-- `RILE_RIGHT_THRESHOLD` / `RILE_LEFT_THRESHOLD`: ±10.0
-- `get_available_controls()`: Filter controls to those in DataFrame
-- `load_dataset()`: Cached CSV loading
-
-## Key Variables
-
-### Country-Year (H1)
-- `spec_y`: Standardized specialization (DV)
-- `rile`: Left-right ideology score (-100 to +100)
-- `right_of_center`: Binary (1 if RILE≥10, 0 if RILE≤-10)
-- `roc_lag{N}`: Lagged right_of_center (N = 1-10 years)
-- `in_alliance`: Binary indicator (1 if country in any alliance that year)
-- `in_hierarchical`: Binary (1 if in hierarchical alliance)
-- `in_voice`: Binary (1 if in voice-driven alliance)
-- `in_uninst`: Binary (1 if in uninstitutionalized alliance)
-- Controls: `lngdp`, `cinc`, `war5_lag`, `in_alliance`
-
-### Dyad-Year (H2)
-- `div_labor`: Pairwise portfolio complementarity (DV, 0=identical portfolios, 1=fully dissimilar)
-- `inst`: Alliance institutionalization (nominal, 1=uninst, 2=voice, 3=hierarchical)
-- `hierarchical`, `voice_driven`: Binary dummies (reference: uninstitutionalized)
-- `rile_dyad_mean`: Mean partner ideology
-- Partner controls: `lngdp_a`, `lngdp_b`, `cinc_a`, `cinc_b` (time-varying country characteristics)
 
 ---
 
-## DETAILED DATA FLOW DOCUMENTATION
+## Notes on Inference
 
-This section documents exactly how data flows from raw files to final analysis, so you can verify correctness.
+### What the Tests Identify
 
-### Division of Labor Calculation (Niche Width Measure)
+- **H1**: Effect is identified from within-country changes in ideology over time, controlling for time-invariant country characteristics and common year shocks.
 
-The dependent variable `div_labor` measures the **weighted pairwise dissimilarity** of military portfolios between two states in a given year, based on the rDMC (relative Defense Military Capabilities) data.
+- **H2**: Effect is identified from dyads that change their institutional arrangement over time. Dyads that never change institution type contribute only to fixed effect estimation, not to the treatment effect.
 
-**Source data**: `rDMC_wide_v1.rds` - Contains counts of 69 military technology categories (e.g., aircraft_attack, submarines_ballistic, helicopters_transport) for each country-year.
+- **H3**: Effect is identified from within-dyad changes in partner ideologies over time.
 
-**Formula** (from Gannon):
+### Sample Restrictions
 
-1. **Convert to proportions**: For each country i in year t, compute p_im = (count of technology m) / (total count of all technologies)
-2. **Compute similarity**: θ_ij = Σ_m min(p_im, p_jm) — the sum of minimum proportions across all technologies
-3. **Convert to dissimilarity**: div_labor = 1 - θ_ij
+All analyses are restricted to democratic states because:
+1. Manifesto Project covers only democracies
+2. Ruling party ideology is most meaningful in competitive democracies
+3. ATOP alliance sample focuses on democratic dyads
 
-**Interpretation**:
-- **θ_ij = 1** (similarity): Both states have identical technology proportions → div_labor = 0
-- **θ_ij = 0** (dissimilarity): States have entirely non-overlapping portfolios → div_labor = 1
-- Higher div_labor = greater complementarity = your partner has capabilities you lack (and vice versa)
+### Standard Error Clustering
 
-**Why this measure?** The measure is weighted by the abundance of each technology, so sharing common equipment (e.g., main battle tanks) contributes less to similarity than sharing rare capabilities (e.g., ICBMs). This accounts for the wide differences in availability of each technology.
-
-**Distribution** (all dyad-years, 1970-2014):
-- N = 483,109 dyad-years
-- Mean = 0.55, Median = 0.52, Std = 0.22
-- Range: [0, 1]
-
-**File**: `assets/datasets/division_of_labor.csv` contains pre-computed div_labor for all country pairs.
-
-### Alliance Institutionalization Coding (Leeds & Anac 2005)
-
-Uses ATOP treaty provisions. This is a 3-category **NOMINAL** outcome (not ordinal) reflecting distinct governance modes. Hierarchy dominates voice; voice dominates absence.
-
-**Variables used**: INTCOM, MILCON, BASE, SUBORD, ORGAN1, ORGPURP1, ORGAN2, ORGPURP2, MILAID, CONTRIB
-
-**Helper**: `mil_org_present` = (ORGAN1 in {1,2,3} & ORGPURP1==1) OR (ORGAN2 in {1,2,3} & ORGPURP2==1)
-
-**Categories** (applied in order, mutually exclusive):
-
-1. **Hierarchical** (inst=3): Authority, command, or structural control provisions:
-   - `INTCOM == 1` (integrated command in peacetime and wartime)
-   - `MILCON == 3` (common defense policy: doctrine, training, procurement, joint planning)
-   - `BASE > 0` (joint or unilateral troop placement / basing)
-   - `SUBORD in {1,2}` (explicit subordination of forces during conflict)
-
-2. **Voice-driven** (inst=2): Coordination/consultation mechanisms (if NOT hierarchical):
-   - `MILCON == 2` (peacetime military consultation)
-   - `mil_org_present` (formal military coordinating organization)
-   - `MILAID in {3,4}` (training and/or technology transfer)
-   - `CONTRIB == 1` (specified troop/supply/funding contributions)
-
-3. **Uninstitutionalized** (inst=1): None of the above provisions
-
-**Missing values**: Treated as "provision absent" (equivalent to 0) following ATOP coding conventions.
-
-**CRITICAL**: ATOP codes some provisions at the member level (e.g., BASE varies by member). We aggregate by alliance using `groupby("atopid").max()` — if ANY member has a provision, the alliance has it.
-
-### Dyad-Year Panel Construction
-
-1. **Load ATOP membership** (`atop5_1m.csv`): Contains member × alliance × phase records
-2. **Consolidate membership**: Group by (atopid, member), take min(yrent), max(yrexit)
-3. **Build all dyads**: Self-join members on atopid, keep state_a < state_b
-4. **Compute dyad period**: dyad_start = max(yrent_a, yrent_b), dyad_end = min(yrexit_a, yrexit_b)
-5. **Expand to dyad-years**: Create one row per (atopid, state_a, state_b, year)
-6. **Merge institutionalization**: Join inst from `_build_institutionalization()`
-7. **Merge div_labor**: Join from `division_of_labor.csv` on (state_a, state_b, year)
-
-**Output**: `results/master_dyad_year.csv` with 153,766 dyad-years
-
----
-
-## DIAGNOSTIC FINDINGS (IMPORTANT!)
-
-### Raw Data Shows Unexpected Pattern
-
-Simple means of div_labor by alliance type (NO controls, NO fixed effects):
-
-| Alliance Type | N | Mean div_labor |
-|---------------|---|----------------|
-| Uninstitutionalized | 25,228 | 0.481 |
-| Voice-driven | 60,056 | 0.517 |
-| Hierarchical | 42,880 | 0.472 |
-
-**Key observation**: Hierarchical alliances have LOWER div_labor than uninstitutionalized!
-
-### Alliance vs Non-Alliance Comparison
-
-| Group | N | Mean div_labor |
-|-------|---|----------------|
-| Not in any alliance | 401,454 | 0.558 |
-| In any alliance | 81,655 | 0.508 |
-| In hierarchical alliance | 36,125 | 0.475 |
-| NATO specifically | 7,941 | 0.545 |
-
-**Key observation**: Alliance members have LESS division of labor than non-members! This suggests alliances lead to portfolio CONVERGENCE, not specialization.
-
-### Why This Might Happen
-
-1. **Selection effect**: Countries with similar military needs form alliances together
-2. **Convergence effect**: Alliance members coordinate procurement and converge over time
-3. **Measurement issue**: div_labor measures portfolio similarity, not role specialization
-4. **NATO exception**: NATO dyads DO show high div_labor (0.545), but other hierarchical alliances don't
-
-### Within-Dyad Variation
-
-For the 1,268 dyads that appear in BOTH hierarchical and non-hierarchical alliances:
-
-| Alliance Type | Mean div_labor (within these dyads) |
-|---------------|-------------------------------------|
-| Uninstitutionalized | 0.424 |
-| Voice-driven | 0.488 |
-| Hierarchical | 0.473 |
-
-This is the variation used by country-FE models. Even within the same dyads, hierarchical years don't have higher div_labor than voice-driven years.
-
----
-
-## Model Specifications
-
-### model_h1 (H1)
-```
-spec_y ~ roc_lag{N} + lngdp + cinc + war5_lag + C(country_code_cow) + C(year)
-```
-Tests lags N = 1 to 10 years (defense procurement takes time to materialize).
-Clustered SEs by country.
-
-### model_h1_event_study (H1 Event Study)
-Runs **separate** event studies for:
-- **Transitions to right** (left → right): expect negative post-transition effects
-- **Transitions to left** (right → left): expect positive post-transition effects
-
-```
-spec_y ~ event_time_dummies + [controls] + C(country_code_cow) + C(year)
-```
-Window: t-5 to t+5 around transition. Reference period: t=-1. Tests parallel trends.
-
-### model_h2 (H2)
-```
-div_labor ~ hierarchical + voice_driven + contiguous + gdp_ratio + cinc_ratio + C(dyad_id) + C(decade)
-```
-- **DV**: div_labor (pairwise portfolio dissimilarity)
-- **IVs**: hierarchical, voice_driven (reference: uninstitutionalized)
-- **Controls**: contiguous, gdp_ratio, cinc_ratio
-- **FEs**: dyad_id (state_a_state_b pair), decade
-- **Clustering**: atopid (alliance-level)
-
-Tests H2A (voice_driven > 0) and H2B (hierarchical > voice_driven).
-
-#### Why Dyad FE (Not Country FE)?
-
-Following Gannon (2023), we use **dyad fixed effects** instead of country FE. This matters enormously:
-
-| FE Specification | hierarchical coef | p-value | Result |
-|------------------|-------------------|---------|--------|
-| Country FE (state_a + state_b) | 0.002 | 0.82 | NULL |
-| Dyad FE (dyad_id) | 0.015 | 0.0001 | SIGNIFICANT*** |
-
-**Why the difference?**
-1. **Country FE** identifies from variation across different dyads involving the same countries (between-dyad + within-dyad variation)
-2. **Dyad FE** identifies ONLY from within-dyad variation over time (dyads that change institution type)
-3. About 38% of dyads (1,636 of 4,337) change institution type, providing identifying variation for dyad FE
-4. Dyad FE controls for all time-invariant dyad characteristics (geography, history, baseline complementarity)
-5. The positive effect comes from: when dyads become MORE hierarchical, their division of labor INCREASES
-
-### model_h2_event_study (H2 Event Study)
-```
-div_labor ~ event_time_dummies + C(state_a) + C(state_b) + C(year)
-```
-Tests whether **dyad-level division of labor** changes around alliance formation.
-Uses full division_of_labor data (all country pairs) to track same dyads before/after entering alliance.
-
----
-
-## CRITICAL CONCEPTUAL DISTINCTION
-
-**Division of Labor** and **Specialization** are DIFFERENT concepts at DIFFERENT units of analysis:
-
-| Concept | Definition | Unit | Variable |
-|---------|------------|------|----------|
-| **Division of Labor** | Complementarity between TWO partners | Dyad-year | `div_labor` |
-| **Specialization** | Concentration of ONE country's portfolio | Country-year | `spec_y` |
-
-### Division of Labor (Dyad-Level)
-- Requires TWO entities - a single country cannot have "division of labor"
-- Measures how COMPLEMENTARY two portfolios are
-- `div_labor = 1 - Σ_m min(p_im, p_jm)` (pairwise dissimilarity)
-- High div_labor = partners have DIFFERENT capabilities (one has tanks, other has aircraft)
-- **H2 tests this**: Does alliance type predict div_labor?
-
-### Specialization (Country-Level)
-- Property of a SINGLE entity
-- Measures how NARROW/FOCUSED a portfolio is
-- High spec_y = country concentrates on few capability types
-- **H1 tests this**: Does ideology predict spec_y?
-
-### Why This Matters
-You CANNOT test "division of labor" at the country level because it's inherently a relationship between TWO entities. The correct setup is:
-- **H1**: Ideology → Specialization (country-year, DV = spec_y)
-- **H2**: Alliance type → Division of Labor (dyad-year, DV = div_labor)
-
----
-
-## Common Tasks
-
-### Adding a new control variable
-1. Add to `COUNTRY_CONTROLS` or `DYAD_CONTROLS` in `config.py`
-2. Ensure it exists in the source data or create it in `build_datasets.py`
-
-### Adding a new figure
-1. Add to `h1_descriptives()` or `h2_descriptives()` in `descriptives.py`
-2. Use `_save_figure()` context manager
-
-### Adding a new model
-1. Add function in `regressions.py` following existing pattern
-2. Call it from the appropriate `run_h1()` or `run_h2()` in `hypotheses.py`
-
-### Adding a new formula
-1. Add to `FORMULAS` dict in `config.py`
-2. Use `FORMULAS["key"].format(controls=controls)` in the model function
-
-## Gotchas
-
-- R&R `inst` variable: 1=uninst, 2=voice, 3=hierarchical (NOT 0/1/2)
-- Some ATOP exit years are 0 (meaning still active) → treat as 2014 (YEAR_END)
-- Specialization data runs 1970-2014, limit dyad expansion accordingly
-- Paths are absolute (resolved from package root via `_ROOT`)
-- Use `paths.validate()` to check all input files exist before running
-- ATOP provisions vary by member — use `groupby().max()` not `drop_duplicates()`
+Clustering accounts for serial correlation within clusters. The choice of cluster level reflects the unit at which observations are not independent:
+- H1: Countries have persistent characteristics that create correlation across years
+- H2/H3: Dyads have persistent relationships that create correlation across years
