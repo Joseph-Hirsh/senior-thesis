@@ -12,6 +12,30 @@ The analysis uses panel data methods (two-way fixed effects, clustered standard 
 
 ---
 
+## Gannon Replication + Explicit Deviations
+
+This analysis follows **Gannon (2023)** methodology as closely as possible, with **four explicit deviations** (D1-D4) that are theoretically motivated and clearly documented.
+
+### Explicit Deviations from Gannon
+
+| Deviation | Description | Rationale |
+|-----------|-------------|-----------|
+| **D1** | Alliance governance is treated as a **3-category NOMINAL** concept (not ordinal) | Categories represent qualitatively different governance modes, not additive levels |
+| **D2** | `SUBORD` is classified as **HIERARCHICAL** | Explicit subordination of forces indicates authority-based governance |
+| **D3** | Main contrasts are **voice > uninst** and **hier > uninst** (reference = uninstitutionalized, not DCA-only) | Tests theory that ATOP treaty provisions matter, not just any security tie |
+| **D4** | **MAIN** tests use **ATOP-only** sample; **UNION** (ATOP + DCAD) is **robustness only** | ATOP provides cleaner institutionalization coding from treaty provisions |
+
+### What Aligns with Gannon
+
+- Dyad-year unit of analysis with max(inst) collapse
+- Dyad FE + Decade FE specification
+- Clustered standard errors by dyad
+- Bounded parity ratios for controls (computed on LEVELS per Gannon)
+- Division of labor measure (portfolio dissimilarity)
+- 1980-2010 window (DCAD alignment)
+
+---
+
 ## Data Sources
 
 ### Input Datasets
@@ -46,45 +70,51 @@ results/
 └── master_dyad_year_gannon_union_1980_2010.csv  # PRIMARY: ATOP OR DCAD aligned (1980-2010)
 ```
 
-**Key distinction:**
+**Key distinction (per D4):**
 - `master_dyad_year.csv`: Full panel, but `any_dca_link = NA` outside 1980-2010
-- `master_dyad_year_gannon_1980_2010.csv`: ATOP-only dyads restricted to 1980-2010
-- `master_dyad_year_gannon_union_1980_2010.csv`: **PRIMARY SAMPLE** — Dyads in ATOP OR DCAD (1980-2010)
+- `master_dyad_year_gannon_1980_2010.csv`: **MAIN SAMPLE** — ATOP-only dyads (1980-2010)
+- `master_dyad_year_gannon_union_1980_2010.csv`: **ROBUSTNESS ONLY** — Dyads in ATOP OR DCAD (1980-2010)
 
-### Gannon UNION Sample Methodology
+### H2 Sample Methodology (per D4)
 
-The **primary H2/H3 analyses** use the Gannon UNION sample, which follows Gannon's approach exactly:
+**MAIN TESTS use ATOP-only sample** (`master_dyad_year_gannon_1980_2010.csv`):
 
 **Sample Construction:**
-1. **Aligned dyad-years** are included if the dyad shares:
-   - An ATOP **offense or defense** pact (excludes neutrality, non-aggression, consultation-only)
-   - **OR** a Defense Cooperation Agreement (DCAD)
-2. This captures meaningful security cooperation where division of labor is relevant
-3. Window restricted to **1980-2010** because DCAD is observed only in that period
+1. **ATOP offense/defense pacts only** — excludes neutrality, non-aggression, consultation-only
+2. Window restricted to **1980-2010** for DCAD alignment
+3. Institutionalization coded from ATOP treaty provisions (Leeds & Anac 2005)
 
-**IMPORTANT: Offense/Defense Filter**
-- Only ATOP alliances with `defense == 1` OR `offense == 1` are included
-- Excludes: neutrality pacts, non-aggression pacts, consultation-only agreements
-- These excluded types don't involve the operational coordination where specialization matters
+**Institutionalization Coding (within ATOP-only sample):**
+- `inst = 1` = Uninstitutionalized (reference category per D3)
+- `inst = 2` = Voice-driven
+- `inst = 3` = Hierarchical (includes SUBORD per D2)
 
-**Vertical Integration Coding:**
-- For dyad-years with ATOP alliance: `vertical_integration = max(inst)` across all shared alliances
-  - 3 = Hierarchical
-  - 2 = Voice-driven
-  - 1 = Uninstitutionalized
-- For DCA-only dyad-years (DCAD but no ATOP): `vertical_integration = 0`
-  - No ATOP treaty provisions to code, so institutionalization is undefined/minimal
+For regressions, recode to `inst_012` where uninst=0, voice=1, hier=2:
+```python
+df["inst_012"] = df["inst"] - 1  # 1→0, 2→1, 3→2
+```
+
+**Main H2 Regression Specification (per D3):**
+```
+div_labor ~ voice + hier + controls + C(dyad_id) + C(decade)
+```
+- Reference: Uninstitutionalized ATOP (inst_012=0)
+- H2A test: β_voice > 0
+- H2B test: β_hier > 0
+
+**ROBUSTNESS: UNION Sample** (`master_dyad_year_gannon_union_1980_2010.csv`):
+
+The UNION sample includes ATOP OR DCAD dyad-years and uses `vertical_integration`:
+- `vertical_integration = 0` = DCA-only (no ATOP treaty)
+- `vertical_integration = 1` = Uninstitutionalized ATOP
+- `vertical_integration = 2` = Voice-driven ATOP
+- `vertical_integration = 3` = Hierarchical ATOP
+
+**IMPORTANT**: In UNION robustness tests, DCA-only is kept as a DISTINCT category (not pooled with uninst ATOP).
 
 **Multiple Alliances:**
 - When a dyad shares multiple ATOP alliances in the same year, take the **maximum** institutionalization score
 - This follows the logic that the most institutionalized arrangement sets the coordination ceiling
-
-**Regression Specifications:**
-- **Fixed Effects**: Dyad FE + Decade FE (NO country FE on top)
-- **Ordinal**: `vertical_integration` as continuous (0, 1, 2, 3)
-- **Categorical**: `hierarchical` + `voice_driven` + `uninstitutionalized` (reference = DCA-only)
-  - **IMPORTANT**: Do NOT pool uninstitutionalized ATOP with DCA-only — they are distinct categories
-  - Uninst ATOP = formal treaty with minimal provisions; DCA-only = informal cooperation agreement
 
 ---
 
@@ -224,10 +254,34 @@ df["ideo_dist_lag5"] = df.groupby("dyad_id")["ideo_dist"].shift(5)
 | Variable | Definition |
 |----------|------------|
 | `contiguous` | Binary: land contiguity (COW conttype = 1) |
-| `lngdp_ratio` | `min(lngdp_a, lngdp_b) / max(lngdp_a, lngdp_b)` — bounded in [0, 1] |
-| `milex_ratio` | `min(milex_a, milex_b) / max(milex_a, milex_b)` — bounded in [0, 1] |
+| `gdp_ratio` | **PRIMARY** — `min(gdp_level_a, gdp_level_b) / max(gdp_level_a, gdp_level_b)` — bounded in (0, 1] |
+| `milex_ratio` | `min(milex_a, milex_b) / max(milex_a, milex_b)` — bounded in (0, 1] |
+| `lngdp_ratio` | **LEGACY** — `min(lngdp_a, lngdp_b) / max(lngdp_a, lngdp_b)` — kept for backward compatibility |
 
-**Note on bounded ratios**: Following Gannon (2023), we use min/max ratios that are bounded in [0, 1] where 1 = equal partners. This avoids extreme values that unbounded ratios (max/min) can produce.
+**CRITICAL: Ratio Computation on LEVELS**
+
+Following Gannon (2023), parity ratios must be computed on **LEVELS**, not logs:
+
+```python
+# PRIMARY: gdp_ratio on GDP LEVELS (Gannon style)
+gdp_min = panel[["gdp_level_a", "gdp_level_b"]].min(axis=1)
+gdp_max = panel[["gdp_level_a", "gdp_level_b"]].max(axis=1)
+valid_mask = (gdp_min > 0) & (gdp_max > 0)
+panel["gdp_ratio"] = np.nan
+panel.loc[valid_mask, "gdp_ratio"] = gdp_min[valid_mask] / gdp_max[valid_mask]
+
+# Assertion: ratios must be in (0, 1]
+assert ((panel["gdp_ratio"].dropna() > 0) & (panel["gdp_ratio"].dropna() <= 1)).all()
+
+# Similarly for milex_ratio
+milex_min = panel[["milex_a", "milex_b"]].min(axis=1)
+milex_max = panel[["milex_a", "milex_b"]].max(axis=1)
+valid_mask = (milex_min > 0) & (milex_max > 0)
+panel["milex_ratio"] = np.nan
+panel.loc[valid_mask, "milex_ratio"] = milex_min[valid_mask] / milex_max[valid_mask]
+```
+
+**Interpretation**: Ratio = 1 means equal partners; ratio → 0 means highly asymmetric. This bounded [0, 1] formulation is symmetric (invariant to dyad ordering) and avoids extreme values.
 
 ---
 
@@ -238,14 +292,17 @@ df["ideo_dist_lag5"] = df.groupby("dyad_id")["ideo_dist"].shift(5)
 | Variable | Source | Derivation |
 |----------|--------|------------|
 | `inst` / `inst_max` | ATOP v5 | Leeds & Anac (2005) rules → max(inst) across shared alliances |
+| `inst_012` | Derived | `= inst - 1` (0=uninst, 1=voice, 2=hier) for ATOP-only regressions |
 | `hierarchical` | Derived | `= 1 if inst == 3` |
 | `voice_driven` | Derived | `= 1 if inst == 2` |
-| `vertical_integration` | Derived | `= max(inst)` for ATOP, `= 0` for DCA-only |
+| `vertical_integration` | Derived | `= max(inst)` for ATOP, `= 0` for DCA-only (UNION sample only) |
 | `any_dca_link` | DCAD v1.0 | Binary: DCA agreement exists (1980-2010 only) |
 | `any_atop_link` | ATOP v5 | Binary: share ATOP offense/defense pact |
 | `div_labor` | Computed from rDMC | Pairwise portfolio dissimilarity |
 | `contiguous` | COW contdird | Binary: land contiguity |
-| `lngdp_ratio` | World Development Indicators | Bounded min/max GDP ratio |
+| `gdp_level` | World Development Indicators | Raw GDP (for ratio computation) |
+| `gdp_ratio` | Derived | **PRIMARY** — Bounded min/max ratio on GDP LEVELS |
+| `lngdp_ratio` | Derived | **LEGACY** — Bounded min/max ratio on log GDP |
 | `milex_ratio` | COW NMC 6.0 | Bounded min/max military expenditure ratio |
 | `rile` | Manifesto Project | Left-right ideology score |
 | `ideo_dist` | Derived | `= |rile_a - rile_b|` |
@@ -368,52 +425,98 @@ Where `post = 1` if `event_time >= 0`, else 0.
 
 ### H2: Alliance Type → Division of Labor
 
-#### Primary Test: `model_h2()`
+#### Primary Test: Categorical Specification (per D1, D3, D4)
 
 **Research Question**: Do more institutionalized alliances promote greater division of labor between partners?
 
-**Estimation Procedure**:
-1. Load `master_dyad_year.csv`
-2. Define required variables: `div_labor`, `hierarchical`, `voice_driven`, `dyad_id`, `decade`, plus available controls (`contiguous`, `lngdp_ratio`, `milex_ratio`)
-3. Drop rows with any missing values (listwise deletion)
-4. Estimate OLS regression
+**SAMPLE (per D4)**: ATOP-only offense/defense dyad-years, 1980-2010 (`master_dyad_year_gannon_1980_2010.csv`)
 
-**Exact Formula**:
+**Estimation Procedure**:
+1. Load `master_dyad_year_gannon_1980_2010.csv` (ATOP-only sample)
+2. Recode inst: `inst_012 = inst - 1` (0=uninst, 1=voice, 2=hier)
+3. Create dummies: `voice = (inst_012 == 1)`, `hier = (inst_012 == 2)`
+4. Reference category: Uninstitutionalized (inst_012 == 0) per D3
+5. Drop rows with any missing values (listwise deletion)
+6. Estimate OLS regression
+
+**Exact Formula (per D3)**:
 ```
-div_labor ~ hierarchical + voice_driven + contiguous + lngdp_ratio + milex_ratio
-            + C(dyad_id) + C(decade)
+div_labor ~ voice + hier + contiguous + gdp_ratio + milex_ratio + C(dyad_id) + C(decade)
 ```
+
+Note: `gdp_ratio` is computed on GDP LEVELS per Gannon.
 
 **Standard Errors**: Clustered by `dyad_id` using:
 ```python
 model.fit(cov_type="cluster", cov_kwds={"groups": analysis["dyad_id"]})
 ```
 
-**Hypothesis Tests**:
-- **H2A**: t-test on `voice_driven`. Expected: β > 0 (voice-driven > uninstitutionalized)
-- **H2B**: Wald test on `hierarchical - voice_driven = 0`. Expected: difference > 0 (hierarchical > voice-driven)
+**Hypothesis Tests (per D3)**:
+- **H2A**: t-test on `voice`. Expected: β > 0 (voice-driven > uninstitutionalized)
+- **H2B**: t-test on `hier`. Expected: β > 0 (hierarchical > uninstitutionalized)
+- **Supplementary**: Wald test on `hier - voice = 0` to compare hier vs voice
 
-The Wald test is performed using:
+The Wald test uses the model covariance matrix for proper SE of differences:
 ```python
-model.wald_test("hierarchical - voice_driven = 0", scalar=True)
+model.wald_test("hier - voice = 0", scalar=True)
+# OR compute from covariance matrix:
+cov_matrix = model.cov_params()
+var_diff = cov_matrix.loc["hier", "hier"] + cov_matrix.loc["voice", "voice"] - 2 * cov_matrix.loc["hier", "voice"]
+se_diff = np.sqrt(var_diff)
 ```
 
-**Output**: `results/h2/model_h2_type.csv`
+**Output**: `results/h2/model_h2_primary.csv`, `results/h2/h2_main_sample_ids.csv`
 
 ---
 
-#### Event Study: `model_h2_event_study()`
+#### Supplementary: Ordinal Specification (per D1)
 
-**Purpose**: Test whether division of labor changes around alliance formation.
+**Per D1 (deviation)**: This ordinal test is SUPPLEMENTARY only. The categorical test above is the primary theory test.
 
-**Procedure**:
-1. Load full division of labor data (not just alliance sample)
-2. Identify first alliance entry year for each dyad
-3. Compute event time relative to first entry
-4. Keep observations in ±5 year window
-5. Estimate event study regression with state_a FE, state_b FE, year FE
+**Formula**:
+```
+div_labor ~ inst_012 + contiguous + gdp_ratio + milex_ratio + C(dyad_id) + C(decade)
+```
 
-**Note**: This uses the broader division of labor dataset to capture pre-alliance periods, not just the alliance dyad-year panel.
+**Interpretation**: Effect of moving up one institutionalization level (0→1 or 1→2).
+
+---
+
+#### Robustness: UNION Sample (per D4)
+
+**UNION sample is for ROBUSTNESS only**. Uses `master_dyad_year_gannon_union_1980_2010.csv` with DCA-only as reference:
+
+**Formula**:
+```
+div_labor ~ uninst + voice + hier + contiguous + gdp_ratio + milex_ratio + C(dyad_id) + C(decade)
+```
+
+**IMPORTANT**: Uninstitutionalized ATOP (vi=1) and DCA-only (vi=0) are kept as DISTINCT categories, never pooled.
+
+---
+
+#### Diagnostic: Placebo Test
+
+**Purpose**: Test for reverse causality. If future institutionalization predicts current div_labor, suggests confounding.
+
+**Formula**:
+```
+div_labor ~ inst_012_lead1 + controls + C(dyad_id) + C(decade)
+```
+
+Where `inst_012_lead1` is institutionalization from the NEXT year. Expected: β ≈ 0 (p ≥ 0.10 = PASS).
+
+---
+
+#### Heterogeneity: Capability Asymmetry
+
+**Purpose**: Test whether institutionalization effects differ by partner capability parity.
+
+Split sample by `milex_ratio` median:
+- High parity (milex_ratio ≥ median): Similar capabilities
+- Low parity (milex_ratio < median): Asymmetric capabilities
+
+Estimate categorical specification separately for each subsample.
 
 ---
 
@@ -432,8 +535,10 @@ div_labor ~ ideo_dist_lag5 + C(dyad_id) + C(year)
 
 **Full** (with Gannon-style controls):
 ```
-div_labor ~ ideo_dist_lag5 + contiguous + lngdp_ratio + milex_ratio + C(dyad_id) + C(year)
+div_labor ~ ideo_dist_lag5 + contiguous + gdp_ratio + milex_ratio + C(dyad_id) + C(year)
 ```
+
+Note: Uses `gdp_ratio` (computed on GDP LEVELS per Gannon), not `lngdp_ratio`.
 
 **Key Difference from H2**: H3 uses year FE (not decade FE) because ideological changes operate at a faster timescale than institutional changes.
 
@@ -538,16 +643,31 @@ df["ideo_dist_lag5"] = df.groupby("dyad_id")["ideo_dist"].shift(5)
 
 ### Bounded Ratio Construction
 
+**CRITICAL: Compute on LEVELS, not logs (per Gannon)**
+
 ```python
-# GDP ratio (bounded in [0,1])
+# PRIMARY: GDP ratio on LEVELS (Gannon style)
+gdp_min = df[["gdp_level_a", "gdp_level_b"]].min(axis=1)
+gdp_max = df[["gdp_level_a", "gdp_level_b"]].max(axis=1)
+valid_mask = (gdp_min > 0) & (gdp_max > 0)
+df["gdp_ratio"] = np.nan
+df.loc[valid_mask, "gdp_ratio"] = gdp_min[valid_mask] / gdp_max[valid_mask]
+
+# Military expenditure ratio (bounded in (0,1])
+milex_min = df[["milex_a", "milex_b"]].min(axis=1)
+milex_max = df[["milex_a", "milex_b"]].max(axis=1)
+valid_mask = (milex_min > 0) & (milex_max > 0)
+df["milex_ratio"] = np.nan
+df.loc[valid_mask, "milex_ratio"] = milex_min[valid_mask] / milex_max[valid_mask]
+
+# ASSERTIONS: Ratios must be in (0, 1]
+assert ((df["gdp_ratio"].dropna() > 0) & (df["gdp_ratio"].dropna() <= 1)).all()
+assert ((df["milex_ratio"].dropna() > 0) & (df["milex_ratio"].dropna() <= 1)).all()
+
+# LEGACY: lngdp_ratio (kept for backward compatibility, NOT used in main regressions)
 lngdp_min = df[["lngdp_a", "lngdp_b"]].min(axis=1)
 lngdp_max = df[["lngdp_a", "lngdp_b"]].max(axis=1)
 df["lngdp_ratio"] = lngdp_min / lngdp_max.replace(0, np.nan)
-
-# Military expenditure ratio (bounded in [0,1])
-milex_min = df[["milex_a", "milex_b"]].min(axis=1)
-milex_max = df[["milex_a", "milex_b"]].max(axis=1)
-df["milex_ratio"] = milex_min / milex_max.replace(0, np.nan)
 ```
 
 ---

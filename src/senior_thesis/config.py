@@ -129,12 +129,20 @@ COUNTRY_CONTROLS: list[str] = [
 ]
 
 # Dyad-level controls for H2 (Gannon 2023 style)
+# CRITICAL: Gannon computes parity ratios on LEVELS, not logs.
 # - contiguous: Binary land contiguity
-# - lngdp_ratio: Bounded ratio of log GDPs: min(lngdp_a, lngdp_b) / max(lngdp_a, lngdp_b) in [0,1]
+# - gdp_ratio: PRIMARY - Bounded parity ratio of GDP LEVELS: min/max in [0,1]
 # - milex_ratio: Bounded ratio of military expenditures from NMC 6.0: min/max in [0,1]
 DYAD_CONTROLS: list[str] = [
     "contiguous",
-    "lngdp_ratio",
+    "gdp_ratio",      # PRIMARY: computed on GDP levels (not logs) per Gannon
+    "milex_ratio",
+]
+
+# Legacy controls (kept for backward compatibility)
+DYAD_CONTROLS_LEGACY: list[str] = [
+    "contiguous",
+    "lngdp_ratio",    # LEGACY: computed on log GDP
     "milex_ratio",
 ]
 

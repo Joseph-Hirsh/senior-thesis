@@ -462,9 +462,14 @@ def build_country_year(paths: Paths) -> pd.DataFrame:
     elif "spec_intscale" in master.columns:
         master["spec_y"] = master["spec_intscale"]
 
+    # GDP variables: preserve BOTH log and level forms
+    # Level form is needed for Gannon-style bounded parity ratios
     if "lngdp_WDI_full" in master.columns:
         master["lngdp"] = master["lngdp_WDI_full"]
+        # Back-transform to get level (GDP is in billions typically)
+        master["gdp_level"] = np.exp(master["lngdp_WDI_full"])
     elif "gdp_WDI_full" in master.columns:
+        master["gdp_level"] = master["gdp_WDI_full"]  # Keep raw level
         master["lngdp"] = _safe_log(master["gdp_WDI_full"])
 
     if "cinc_MC" in master.columns:
@@ -859,6 +864,11 @@ def build_dyad_year(paths: Paths) -> pd.DataFrame:
         lngdp_data = master_cy[["country_code_cow", "year", "lngdp"]].copy()
         panel = _merge_by_partner(panel, lngdp_data, "lngdp")
 
+    # Also merge GDP levels for Gannon-style bounded parity ratio
+    if "gdp_level" in master_cy.columns:
+        gdp_level_data = master_cy[["country_code_cow", "year", "gdp_level"]].copy()
+        panel = _merge_by_partner(panel, gdp_level_data, "gdp_level")
+
     if "cinc" in master_cy.columns:
         cinc_data = master_cy[["country_code_cow", "year", "cinc"]].copy()
         panel = _merge_by_partner(panel, cinc_data, "cinc")
@@ -919,8 +929,25 @@ def build_dyad_year(paths: Paths) -> pd.DataFrame:
     # =========================================================================
     # Following Gannon (2023): Use min/max ratio, bounded in [0,1]
     # This creates symmetric, interpretable ratios where 1 = equal partners
+    #
+    # CRITICAL: Gannon computes parity ratios on LEVELS, not logs.
+    # gdp_ratio = min(gdp_a, gdp_b) / max(gdp_a, gdp_b)
+    # This is the PRIMARY ratio for regressions.
 
-    # Log GDP ratio (bounded): min(lngdp_a, lngdp_b) / max(lngdp_a, lngdp_b)
+    # GDP LEVEL ratio (bounded): PRIMARY ratio following Gannon
+    if "gdp_level_a" in panel.columns and "gdp_level_b" in panel.columns:
+        gdp_min = panel[["gdp_level_a", "gdp_level_b"]].min(axis=1)
+        gdp_max = panel[["gdp_level_a", "gdp_level_b"]].max(axis=1)
+        # Only defined for strictly positive levels
+        valid_mask = (gdp_min > 0) & (gdp_max > 0)
+        panel["gdp_ratio"] = np.nan
+        panel.loc[valid_mask, "gdp_ratio"] = gdp_min[valid_mask] / gdp_max[valid_mask]
+        # Assertion: ratios must be in (0, 1]
+        gdp_valid = panel["gdp_ratio"].dropna()
+        assert ((gdp_valid > 0) & (gdp_valid <= 1)).all(), "gdp_ratio must be in (0, 1]"
+        print(f"    gdp_ratio (on levels): {panel['gdp_ratio'].notna().sum():,} valid values")
+
+    # Log GDP ratio (bounded): LEGACY, kept for backward compatibility
     if "lngdp_a" in panel.columns and "lngdp_b" in panel.columns:
         lngdp_min = panel[["lngdp_a", "lngdp_b"]].min(axis=1)
         lngdp_max = panel[["lngdp_a", "lngdp_b"]].max(axis=1)
@@ -930,7 +957,13 @@ def build_dyad_year(paths: Paths) -> pd.DataFrame:
     if "milex_a" in panel.columns and "milex_b" in panel.columns:
         milex_min = panel[["milex_a", "milex_b"]].min(axis=1)
         milex_max = panel[["milex_a", "milex_b"]].max(axis=1)
-        panel["milex_ratio"] = milex_min / milex_max.replace(0, np.nan)
+        # Only defined for strictly positive milex
+        valid_mask = (milex_min > 0) & (milex_max > 0)
+        panel["milex_ratio"] = np.nan
+        panel.loc[valid_mask, "milex_ratio"] = milex_min[valid_mask] / milex_max[valid_mask]
+        # Assertion: ratios must be in (0, 1]
+        milex_valid = panel["milex_ratio"].dropna()
+        assert ((milex_valid > 0) & (milex_valid <= 1)).all(), "milex_ratio must be in (0, 1]"
 
     # Create decade variable for FE
     panel["decade"] = (panel["year"] // 10) * 10
@@ -965,10 +998,12 @@ def build_dyad_year(paths: Paths) -> pd.DataFrame:
     dyad_year_invariant_cols = [
         "div_labor",       # DV: pairwise complementarity
         "contiguous",      # Dyad geography
-        "lngdp_ratio",     # Bounded ratio from country-year data
+        "gdp_ratio",       # PRIMARY: Bounded parity ratio on GDP LEVELS (Gannon style)
+        "lngdp_ratio",     # LEGACY: Bounded ratio from log GDP
         "milex_ratio",     # Bounded ratio from country-year data
         "rile_a", "rile_b", "rile_dyad_mean",  # Country-year ideology
         "lngdp_a", "lngdp_b", "cinc_a", "cinc_b",  # Country-year controls
+        "gdp_level_a", "gdp_level_b",  # GDP levels for ratio computation
         "milex_a", "milex_b",  # Country-year milex
         "has_dca",         # DCA status (dyad-year level)
         "decade",          # Year-derived
@@ -1084,6 +1119,7 @@ def build_dyad_year(paths: Paths) -> pd.DataFrame:
 
     div_labor_n = panel["div_labor"].notna().sum()
     contiguous_n = panel["contiguous"].sum()
+    gdp_ratio_n = panel["gdp_ratio"].notna().sum() if "gdp_ratio" in panel.columns else 0
     lngdp_ratio_n = panel["lngdp_ratio"].notna().sum() if "lngdp_ratio" in panel.columns else 0
     milex_ratio_n = panel["milex_ratio"].notna().sum() if "milex_ratio" in panel.columns else 0
     dca_observed = panel["has_dca"].notna().sum() if "has_dca" in panel.columns else 0
@@ -1091,7 +1127,8 @@ def build_dyad_year(paths: Paths) -> pd.DataFrame:
     print(f"  Coverage:")
     print(f"    div_labor:    {div_labor_n:,} ({div_labor_n/len(panel):.1%})")
     print(f"    contiguous:   {contiguous_n:,} dyad-years with land border ({contiguous_n/len(panel):.1%})")
-    print(f"    lngdp_ratio:  {lngdp_ratio_n:,} ({lngdp_ratio_n/len(panel):.1%})")
+    print(f"    gdp_ratio:    {gdp_ratio_n:,} ({gdp_ratio_n/len(panel):.1%}) [PRIMARY: on levels]")
+    print(f"    lngdp_ratio:  {lngdp_ratio_n:,} ({lngdp_ratio_n/len(panel):.1%}) [legacy: on logs]")
     print(f"    milex_ratio:  {milex_ratio_n:,} ({milex_ratio_n/len(panel):.1%})")
     print(f"    has_dca:      {dca_observed:,} observed ({dca_observed/len(panel):.1%}), {dca_positive:,} positive")
 
@@ -1372,10 +1409,15 @@ def build_dyad_year_gannon_union(paths: Paths) -> pd.DataFrame:
     # =========================================================================
     # STEP 9: Merge partner-level controls from country-year
     # =========================================================================
-    # GDP
+    # GDP (both log and level forms)
     if "lngdp" in master_cy.columns:
         lngdp_data = master_cy[["country_code_cow", "year", "lngdp"]].copy()
         panel = _merge_by_partner(panel, lngdp_data, "lngdp")
+
+    # GDP levels for Gannon-style bounded parity ratio
+    if "gdp_level" in master_cy.columns:
+        gdp_level_data = master_cy[["country_code_cow", "year", "gdp_level"]].copy()
+        panel = _merge_by_partner(panel, gdp_level_data, "gdp_level")
 
     # CINC
     if "cinc" in master_cy.columns:
@@ -1396,7 +1438,23 @@ def build_dyad_year_gannon_union(paths: Paths) -> pd.DataFrame:
     # =========================================================================
     # STEP 10: Create Gannon-style bounded ratios
     # =========================================================================
-    # lngdp_ratio = min/max (bounded in [0,1])
+    # CRITICAL: Gannon computes parity ratios on LEVELS, not logs.
+    # gdp_ratio = min(gdp_a, gdp_b) / max(gdp_a, gdp_b)
+    # This is the PRIMARY ratio for regressions.
+
+    # GDP LEVEL ratio (bounded): PRIMARY ratio following Gannon
+    if "gdp_level_a" in panel.columns and "gdp_level_b" in panel.columns:
+        gdp_min = panel[["gdp_level_a", "gdp_level_b"]].min(axis=1)
+        gdp_max = panel[["gdp_level_a", "gdp_level_b"]].max(axis=1)
+        valid_mask = (gdp_min > 0) & (gdp_max > 0)
+        panel["gdp_ratio"] = np.nan
+        panel.loc[valid_mask, "gdp_ratio"] = gdp_min[valid_mask] / gdp_max[valid_mask]
+        # Assertion: ratios must be in (0, 1]
+        gdp_valid = panel["gdp_ratio"].dropna()
+        if len(gdp_valid) > 0:
+            assert ((gdp_valid > 0) & (gdp_valid <= 1)).all(), "gdp_ratio must be in (0, 1]"
+
+    # lngdp_ratio = min/max (bounded in [0,1]) - LEGACY
     if "lngdp_a" in panel.columns and "lngdp_b" in panel.columns:
         lngdp_min = panel[["lngdp_a", "lngdp_b"]].min(axis=1)
         lngdp_max = panel[["lngdp_a", "lngdp_b"]].max(axis=1)
@@ -1406,7 +1464,13 @@ def build_dyad_year_gannon_union(paths: Paths) -> pd.DataFrame:
     if "milex_a" in panel.columns and "milex_b" in panel.columns:
         milex_min = panel[["milex_a", "milex_b"]].min(axis=1)
         milex_max = panel[["milex_a", "milex_b"]].max(axis=1)
-        panel["milex_ratio"] = milex_min / milex_max.replace(0, np.nan)
+        valid_mask = (milex_min > 0) & (milex_max > 0)
+        panel["milex_ratio"] = np.nan
+        panel.loc[valid_mask, "milex_ratio"] = milex_min[valid_mask] / milex_max[valid_mask]
+        # Assertion: ratios must be in (0, 1]
+        milex_valid = panel["milex_ratio"].dropna()
+        if len(milex_valid) > 0:
+            assert ((milex_valid > 0) & (milex_valid <= 1)).all(), "milex_ratio must be in (0, 1]"
 
     # =========================================================================
     # STEP 11: Merge ideology for H3
@@ -1464,11 +1528,13 @@ def build_dyad_year_gannon_union(paths: Paths) -> pd.DataFrame:
 
     print(f"\n  Variable coverage:")
     div_labor_n = panel["div_labor"].notna().sum()
+    gdp_ratio_n = panel["gdp_ratio"].notna().sum() if "gdp_ratio" in panel.columns else 0
     lngdp_ratio_n = panel["lngdp_ratio"].notna().sum() if "lngdp_ratio" in panel.columns else 0
     milex_ratio_n = panel["milex_ratio"].notna().sum() if "milex_ratio" in panel.columns else 0
     ideo_dist_n = panel["ideo_dist_lag5"].notna().sum()
     print(f"    div_labor:      {div_labor_n:,} ({100*div_labor_n/len(panel):.1f}%)")
-    print(f"    lngdp_ratio:    {lngdp_ratio_n:,} ({100*lngdp_ratio_n/len(panel):.1f}%)")
+    print(f"    gdp_ratio:      {gdp_ratio_n:,} ({100*gdp_ratio_n/len(panel):.1f}%) [PRIMARY: on levels]")
+    print(f"    lngdp_ratio:    {lngdp_ratio_n:,} ({100*lngdp_ratio_n/len(panel):.1f}%) [legacy: on logs]")
     print(f"    milex_ratio:    {milex_ratio_n:,} ({100*milex_ratio_n/len(panel):.1f}%)")
     print(f"    ideo_dist_lag5: {ideo_dist_n:,} ({100*ideo_dist_n/len(panel):.1f}%)")
 

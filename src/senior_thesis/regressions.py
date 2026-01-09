@@ -343,124 +343,97 @@ def _run_event_study(
 def run_h2_regressions(paths: Paths) -> dict:
     """
     Run H2 regressions: Alliance type → Division of labor.
+
+    GANNON REPLICATION with EXPLICIT DEVIATIONS:
+    - D1: Alliance governance is 3-category NOMINAL (not ordinal)
+    - D2: SUBORD is classified as HIERARCHICAL
+    - D3: Main contrasts are voice > uninst and hier > uninst (not vs DCA-only)
+    - D4: MAIN uses ATOP-only sample; UNION is robustness only
     """
     print(_box("H2: ALLIANCE TYPE → DIVISION OF LABOR"))
     print("""
-  THEORY: More institutionalized alliances (hierarchical > voice-driven >
-  uninstitutionalized) facilitate greater division of labor between partners.
+  ═══════════════════════════════════════════════════════════════════════════
+  GANNON REPLICATION + EXPLICIT DEVIATIONS
+  ═══════════════════════════════════════════════════════════════════════════
 
-  PREDICTIONS:
-    H2A: Voice-driven alliances > Uninstitutionalized (β_voice > 0)
-    H2B: Hierarchical alliances > Voice-driven (β_hier > β_voice)
+  THEORY: More institutionalized alliances facilitate greater division of
+  labor between partners through coordination mechanisms.
+
+  PREDICTIONS (per D3 - deviation from Gannon):
+    H2A: Voice-driven > Uninstitutionalized (β_voice > 0 vs uninst reference)
+    H2B: Hierarchical > Uninstitutionalized (β_hier > 0 vs uninst reference)
+
+  SAMPLE (per D4 - deviation from Gannon):
+    MAIN TESTS use ATOP-only offense/defense dyad-years (1980-2010)
+    UNION sample (ATOP + DCAD) is robustness only
 """)
 
     results = {}
-    df = pd.read_csv(paths.dyad_year_gannon_union_csv)
 
-    # Sample description
-    print(_subhead("SAMPLE: Gannon UNION (1980-2010)"))
+    # =========================================================================
+    # MAIN SPECIFICATION: ATOP-ONLY SAMPLE
+    # =========================================================================
+    print(_subhead("MAIN: ATOP-Only Sample (1980-2010)"))
+
+    # Load ATOP-only dataset (NOT union!)
+    df_main = pd.read_csv(paths.dyad_year_gannon_csv)
+
     print(f"""
-  Definition:    Dyad-years where partners share an ATOP pact OR DCAD agreement
+  Definition:    Dyad-years where partners share ATOP offense/defense pact
+                 (excludes DCA-only dyad-years for main test per D4)
 
-  Total observations:     {len(df):,} dyad-years
-  Unique dyads:           {df['dyad_id'].nunique():,} alliance partnerships
-  Year range:             1980–2010
+  Total observations:     {len(df_main):,} dyad-years
+  Unique dyads:           {df_main['dyad_id'].nunique():,} alliance partnerships
+  Year range:             {int(df_main['year'].min())}–{int(df_main['year'].max())}
 """)
 
-    n_atop_only = ((df["any_atop_link"] == 1) & (df["any_dca_link"] != 1)).sum()
-    n_dca_only = ((df["any_atop_link"] != 1) & (df["any_dca_link"] == 1)).sum()
-    n_both = ((df["any_atop_link"] == 1) & (df["any_dca_link"] == 1)).sum()
+    # Recode inst for ATOP-only: 1/2/3 → 0/1/2 (uninst=0, voice=1, hier=2)
+    # This makes uninst the reference category
+    df_main["inst_012"] = df_main["inst"] - 1  # 1→0, 2→1, 3→2
 
-    print(f"  Alignment breakdown:")
-    print(f"    ATOP-only:    {n_atop_only:>8,} ({100*n_atop_only/len(df):.1f}%)")
-    print(f"    DCAD-only:    {n_dca_only:>8,} ({100*n_dca_only/len(df):.1f}%)")
-    print(f"    Both:         {n_both:>8,} ({100*n_both/len(df):.1f}%)")
+    # Sample distribution
+    inst_dist = df_main["inst_012"].value_counts().sort_index()
+    labels_012 = {0: "Uninstitutionalized (inst_012=0)",
+                  1: "Voice-driven (inst_012=1)",
+                  2: "Hierarchical (inst_012=2)"}
+
+    print("  Sample distribution by alliance type:")
+    for inst_val, count in inst_dist.items():
+        print(f"    {labels_012.get(int(inst_val), f'Type {inst_val}'):<35} {count:>8,} ({100*count/len(df_main):>5.1f}%)")
+
+    # Get available controls (using gdp_ratio as PRIMARY per Gannon)
+    controls = get_available_controls(df_main, DYAD_CONTROLS)
+    control_str = " + ".join(controls) if controls else "1"
+    print(f"\n  Controls: {', '.join(controls) if controls else 'none'}")
 
     # -------------------------------------------------------------------------
-    # ORDINAL SPECIFICATION
+    # TEST 1: CATEGORICAL SPECIFICATION (PRIMARY - per D1/D3)
     # -------------------------------------------------------------------------
-    print(_subhead("TEST 1: Ordinal Specification"))
+    print(_subhead("TEST 1: Categorical Specification (PRIMARY)"))
     print("""
-  What this tests: Does alliance depth predict division of labor?
+  Per D1 (deviation): Alliance governance is 3-category NOMINAL, not ordinal.
+  Per D3 (deviation): Reference category is UNINSTITUTIONALIZED (not DCA-only).
 
   Design:
     • Outcome (DV):    div_labor = portfolio dissimilarity (0 = identical, 1 = fully different)
-    • Predictor (IV):  vertical_integration = ordinal scale
-                       0 = DCA-only (no formal treaty)
-                       1 = Uninstitutionalized ATOP alliance
-                       2 = Voice-driven ATOP alliance
-                       3 = Hierarchical ATOP alliance
+    • Predictors:      voice (inst_012=1), hier (inst_012=2) as dummies
+    • Reference:       Uninstitutionalized ATOP alliance (inst_012=0)
     • Fixed Effects:   Dyad + Decade
     • Standard Errors: Clustered by dyad
+
+  Tests:
+    H2A: β_voice > 0 (voice-driven > uninstitutionalized)
+    H2B: β_hier > 0 (hierarchical > uninstitutionalized)
 """)
 
-    controls = get_available_controls(df, DYAD_CONTROLS)
-    control_str = " + ".join(controls) if controls else "1"
+    # Create dummies with uninst as reference
+    df_main["voice"] = (df_main["inst_012"] == 1).astype(int)
+    df_main["hier"] = (df_main["inst_012"] == 2).astype(int)
 
-    required = ["div_labor", "vertical_integration", "dyad_id", "decade"] + controls
-    analysis = df.dropna(subset=required).copy()
+    required = ["div_labor", "inst_012", "dyad_id", "decade"] + controls
+    analysis = df_main.dropna(subset=required).copy()
 
-    # Distribution
-    vi_dist = analysis["vertical_integration"].value_counts().sort_index()
-    labels = {0: "DCA-only (vi=0)", 1: "Uninstitutionalized (vi=1)",
-              2: "Voice-driven (vi=2)", 3: "Hierarchical (vi=3)"}
-
-    print("  Sample distribution by alliance type:")
-    for vi, count in vi_dist.items():
-        print(f"    {labels.get(int(vi), vi):<30} {count:>8,} ({100*count/len(analysis):>5.1f}%)")
-
-    formula = f"div_labor ~ vertical_integration + {control_str} + C(dyad_id) + C(decade)"
-
-    model = smf.ols(formula, data=analysis).fit(
-        cov_type="cluster",
-        cov_kwds={"groups": analysis["dyad_id"]},
-    )
-
-    coef = model.params["vertical_integration"]
-    se = model.bse["vertical_integration"]
-    pval = model.pvalues["vertical_integration"]
-
-    print()
-    print(f"  Sample size:     N = {int(model.nobs):,} dyad-years")
-    print()
-    print(f"  RESULT:          {_format_coef(coef, se, pval)}")
-    print(f"  Interpretation:  Moving up one level of institutionalization is")
-    print(f"                   associated with a {abs(coef):.4f} change in div_labor")
-    print(f"  Significance:    {_sig_word(pval)}")
-
-    results["ordinal"] = {
-        "coefficient": coef, "se": se, "p_value": pval,
-        "n": int(model.nobs), "r2": model.rsquared,
-    }
-
-    _ALL_RESULTS["H2_ordinal"] = {
-        "coef": coef, "se": se, "p": pval, "n": int(model.nobs),
-        "supported": pval < 0.05 and coef > 0,
-        "direction": "positive" if coef > 0 else "negative",
-    }
-
-    # -------------------------------------------------------------------------
-    # CATEGORICAL SPECIFICATION
-    # -------------------------------------------------------------------------
-    print(_subhead("TEST 2: Categorical Specification (H2A & H2B)"))
-    print("""
-  What this tests: Separate effects of each alliance type
-
-  Design:
-    • Predictors:  hierarchical, voice_driven, uninstitutionalized (dummies)
-    • Reference:   DCA-only (informal defense cooperation, no formal treaty)
-    • NOTE: Uninst ATOP and DCA-only are NOT pooled — they are distinct categories
-
-  Expected:
-    H2A: β_voice > β_uninst (voice-driven > uninstitutionalized)
-    H2B: β_hier > β_voice (hierarchical > voice-driven)
-""")
-
-    analysis["hierarchical"] = (analysis["vertical_integration"] == 3).astype(int)
-    analysis["voice_driven"] = (analysis["vertical_integration"] == 2).astype(int)
-    analysis["uninstitutionalized"] = (analysis["vertical_integration"] == 1).astype(int)
-
-    formula_cat = f"div_labor ~ hierarchical + voice_driven + uninstitutionalized + {control_str} + C(dyad_id) + C(decade)"
+    formula_cat = f"div_labor ~ voice + hier + {control_str} + C(dyad_id) + C(decade)"
 
     try:
         model_cat = smf.ols(formula_cat, data=analysis).fit(
@@ -468,89 +441,320 @@ def run_h2_regressions(paths: Paths) -> dict:
             cov_kwds={"groups": analysis["dyad_id"]},
         )
 
-        hier_coef = model_cat.params["hierarchical"]
-        hier_se = model_cat.bse["hierarchical"]
-        hier_p = model_cat.pvalues["hierarchical"]
+        voice_coef = model_cat.params["voice"]
+        voice_se = model_cat.bse["voice"]
+        voice_p = model_cat.pvalues["voice"]
 
-        voice_coef = model_cat.params["voice_driven"]
-        voice_se = model_cat.bse["voice_driven"]
-        voice_p = model_cat.pvalues["voice_driven"]
+        hier_coef = model_cat.params["hier"]
+        hier_se = model_cat.bse["hier"]
+        hier_p = model_cat.pvalues["hier"]
 
-        uninst_coef = model_cat.params["uninstitutionalized"]
-        uninst_se = model_cat.bse["uninstitutionalized"]
-        uninst_p = model_cat.pvalues["uninstitutionalized"]
-
-        print(f"  Sample size:     N = {int(model_cat.nobs):,}")
+        print(f"  Sample size:     N = {int(model_cat.nobs):,} dyad-years")
+        print(f"  Unique dyads:    {analysis['dyad_id'].nunique():,}")
         print()
-        print(f"  RESULTS (vs. DCA-only reference):")
-        print(f"    Uninstitutionalized: {_format_coef(uninst_coef, uninst_se, uninst_p)}")
-        print(f"    Voice-driven:        {_format_coef(voice_coef, voice_se, voice_p)}")
-        print(f"    Hierarchical:        {_format_coef(hier_coef, hier_se, hier_p)}")
+        print(f"  RESULTS (vs. Uninstitutionalized reference):")
+        print(f"    Voice-driven:   {_format_coef(voice_coef, voice_se, voice_p)}")
+        print(f"    Hierarchical:   {_format_coef(hier_coef, hier_se, hier_p)}")
         print()
 
-        # H2A test: voice > uninst
-        try:
-            wald_h2a = model_cat.wald_test("voice_driven - uninstitutionalized = 0", scalar=True)
-            p_h2a = float(wald_h2a.pvalue)
-        except Exception:
-            diff_h2a = voice_coef - uninst_coef
-            se_diff_h2a = np.sqrt(voice_se**2 + uninst_se**2)
-            t_stat_h2a = diff_h2a / se_diff_h2a
-            p_h2a = 2 * (1 - scipy_stats.t.cdf(abs(t_stat_h2a), model_cat.df_resid))
-
-        diff_h2a = voice_coef - uninst_coef
+        # H2A test: voice > uninst (direct coefficient test)
         print(f"  H2A TEST (voice-driven > uninstitutionalized):")
-        print(f"    Difference:    Δβ = {diff_h2a:.4f} (voice - uninst)")
-        print(f"    p-value:       p = {p_h2a:.4f} {_sig(p_h2a)}")
-        print(f"    Result:        {_sig_word(p_h2a)}, {'supported' if p_h2a < 0.05 and diff_h2a > 0 else 'not supported'}")
+        print(f"    Coefficient:   β = {voice_coef:.4f} (SE = {voice_se:.4f})")
+        print(f"    p-value:       p = {voice_p:.4f} {_sig(voice_p)}")
+        supported_h2a = voice_p < 0.05 and voice_coef > 0
+        print(f"    Result:        {_sig_word(voice_p)}, {'SUPPORTED' if supported_h2a else 'not supported'}")
 
-        # H2B test: hier > voice
-        try:
-            wald_h2b = model_cat.wald_test("hierarchical - voice_driven = 0", scalar=True)
-            p_h2b = float(wald_h2b.pvalue)
-        except Exception:
-            diff_h2b = hier_coef - voice_coef
-            se_diff_h2b = np.sqrt(hier_se**2 + voice_se**2)
-            t_stat_h2b = diff_h2b / se_diff_h2b
-            p_h2b = 2 * (1 - scipy_stats.t.cdf(abs(t_stat_h2b), model_cat.df_resid))
-
-        diff_h2b = hier_coef - voice_coef
+        # H2B test: hier > uninst (direct coefficient test)
         print()
-        print(f"  H2B TEST (hierarchical > voice-driven):")
-        print(f"    Difference:    Δβ = {diff_h2b:.4f} (hier - voice)")
-        print(f"    p-value:       p = {p_h2b:.4f} {_sig(p_h2b)}")
-        print(f"    Result:        {_sig_word(p_h2b)}, {'supported' if p_h2b < 0.05 and diff_h2b > 0 else 'not supported'}")
+        print(f"  H2B TEST (hierarchical > uninstitutionalized):")
+        print(f"    Coefficient:   β = {hier_coef:.4f} (SE = {hier_se:.4f})")
+        print(f"    p-value:       p = {hier_p:.4f} {_sig(hier_p)}")
+        supported_h2b = hier_p < 0.05 and hier_coef > 0
+        print(f"    Result:        {_sig_word(hier_p)}, {'SUPPORTED' if supported_h2b else 'not supported'}")
 
-        results["categorical"] = {
-            "hierarchical": hier_coef, "voice_driven": voice_coef, "uninstitutionalized": uninst_coef,
-            "h2a_diff": diff_h2a, "h2a_p": p_h2a,
-            "h2b_diff": diff_h2b, "h2b_p": p_h2b, "n": int(model_cat.nobs),
+        # Additional: hier vs voice comparison (using proper covariance-based SE)
+        print()
+        print(f"  SUPPLEMENTARY: Hierarchical vs Voice-driven:")
+        try:
+            wald_hier_voice = model_cat.wald_test("hier - voice = 0", scalar=True)
+            p_hier_voice = float(wald_hier_voice.pvalue)
+        except Exception:
+            # Fallback: compute from covariance matrix
+            cov_matrix = model_cat.cov_params()
+            var_diff = (cov_matrix.loc["hier", "hier"] + cov_matrix.loc["voice", "voice"]
+                       - 2 * cov_matrix.loc["hier", "voice"])
+            se_diff = np.sqrt(var_diff) if var_diff > 0 else np.nan
+            diff_hier_voice = hier_coef - voice_coef
+            if not np.isnan(se_diff):
+                t_stat = diff_hier_voice / se_diff
+                p_hier_voice = 2 * (1 - scipy_stats.t.cdf(abs(t_stat), model_cat.df_resid))
+            else:
+                p_hier_voice = np.nan
+
+        diff_hier_voice = hier_coef - voice_coef
+        print(f"    Difference:    Δβ = {diff_hier_voice:.4f} (hier - voice)")
+        print(f"    p-value:       p = {p_hier_voice:.4f} {_sig(p_hier_voice)}")
+
+        results["categorical_main"] = {
+            "voice": voice_coef, "voice_se": voice_se, "voice_p": voice_p,
+            "hier": hier_coef, "hier_se": hier_se, "hier_p": hier_p,
+            "hier_vs_voice_diff": diff_hier_voice, "hier_vs_voice_p": p_hier_voice,
+            "n": int(model_cat.nobs), "n_dyads": analysis['dyad_id'].nunique(),
+            "r2": model_cat.rsquared,
         }
 
         _ALL_RESULTS["H2A"] = {
-            "coef": diff_h2a, "se": se_diff_h2a if 'se_diff_h2a' in dir() else np.nan, "p": p_h2a,
+            "coef": voice_coef, "se": voice_se, "p": voice_p,
             "n": int(model_cat.nobs),
-            "supported": p_h2a < 0.05 and diff_h2a > 0,
+            "supported": supported_h2a,
         }
         _ALL_RESULTS["H2B"] = {
-            "coef": diff_h2b, "se": se_diff_h2b if 'se_diff_h2b' in dir() else np.nan, "p": p_h2b,
+            "coef": hier_coef, "se": hier_se, "p": hier_p,
             "n": int(model_cat.nobs),
-            "supported": p_h2b < 0.05 and diff_h2b > 0,
+            "supported": supported_h2b,
         }
 
-    except np.linalg.LinAlgError:
-        print("  ⚠ Model estimation failed due to multicollinearity")
+    except np.linalg.LinAlgError as e:
+        print(f"  ⚠ Model estimation failed: {e}")
         print("    This often occurs when dyad fixed effects absorb too much variation.")
-        print("    The ordinal specification above provides the primary test.")
-        results["categorical"] = None
+        results["categorical_main"] = None
 
-    # Save
-    results_df = pd.DataFrame([{
-        "specification": "ordinal",
-        "variable": "vertical_integration",
-        **results["ordinal"],
-    }])
-    results_df.to_csv(paths.h2_dir / "model_h2_primary.csv", index=False)
+    # -------------------------------------------------------------------------
+    # TEST 2: ORDINAL SPECIFICATION (SUPPLEMENTARY - per D1)
+    # -------------------------------------------------------------------------
+    print(_subhead("TEST 2: Ordinal Specification (SUPPLEMENTARY)"))
+    print("""
+  Per D1 (deviation): This ordinal test is SUPPLEMENTARY only.
+  The categorical test above is the primary theory test.
+
+  Design:
+    • Predictor (IV):  inst_012 = ordinal scale (0=uninst, 1=voice, 2=hier)
+    • Interpretation:  Effect of moving up one institutionalization level
+""")
+
+    formula_ord = f"div_labor ~ inst_012 + {control_str} + C(dyad_id) + C(decade)"
+
+    try:
+        model_ord = smf.ols(formula_ord, data=analysis).fit(
+            cov_type="cluster",
+            cov_kwds={"groups": analysis["dyad_id"]},
+        )
+
+        coef = model_ord.params["inst_012"]
+        se = model_ord.bse["inst_012"]
+        pval = model_ord.pvalues["inst_012"]
+
+        print(f"  Sample size:     N = {int(model_ord.nobs):,}")
+        print()
+        print(f"  RESULT:          {_format_coef(coef, se, pval)}")
+        print(f"  Interpretation:  Moving up one institutionalization level is")
+        print(f"                   associated with a {abs(coef):.4f} change in div_labor")
+        print(f"  Significance:    {_sig_word(pval)}")
+
+        results["ordinal_main"] = {
+            "coefficient": coef, "se": se, "p_value": pval,
+            "n": int(model_ord.nobs), "r2": model_ord.rsquared,
+        }
+
+        _ALL_RESULTS["H2_ordinal"] = {
+            "coef": coef, "se": se, "p": pval, "n": int(model_ord.nobs),
+            "supported": pval < 0.05 and coef > 0,
+            "direction": "positive" if coef > 0 else "negative",
+        }
+
+    except np.linalg.LinAlgError as e:
+        print(f"  ⚠ Model estimation failed: {e}")
+        results["ordinal_main"] = None
+
+    # =========================================================================
+    # ROBUSTNESS: UNION SAMPLE (per D4)
+    # =========================================================================
+    print(_subhead("ROBUSTNESS: UNION Sample (ATOP + DCAD)"))
+    print("""
+  Per D4 (deviation): UNION sample is for ROBUSTNESS only.
+  DCA-only dyad-years are included but kept as a DISTINCT category (not pooled).
+""")
+
+    # Load UNION dataset
+    df_union = pd.read_csv(paths.dyad_year_gannon_union_csv)
+
+    n_atop_only = ((df_union["any_atop_link"] == 1) & (df_union["any_dca_link"] != 1)).sum()
+    n_dca_only = ((df_union["any_atop_link"] != 1) & (df_union["any_dca_link"] == 1)).sum()
+    n_both = ((df_union["any_atop_link"] == 1) & (df_union["any_dca_link"] == 1)).sum()
+
+    print(f"  UNION sample: {len(df_union):,} dyad-years")
+    print(f"    ATOP-only:    {n_atop_only:>8,} ({100*n_atop_only/len(df_union):.1f}%)")
+    print(f"    DCA-only:     {n_dca_only:>8,} ({100*n_dca_only/len(df_union):.1f}%)")
+    print(f"    Both:         {n_both:>8,} ({100*n_both/len(df_union):.1f}%)")
+
+    # For UNION: use full 4-category specification
+    # Create dummies: uninst, voice, hier (ref = DCA-only = vi==0)
+    df_union["uninst"] = (df_union["vertical_integration"] == 1).astype(int)
+    df_union["voice"] = (df_union["vertical_integration"] == 2).astype(int)
+    df_union["hier"] = (df_union["vertical_integration"] == 3).astype(int)
+
+    controls_union = get_available_controls(df_union, DYAD_CONTROLS)
+    control_str_union = " + ".join(controls_union) if controls_union else "1"
+
+    required_union = ["div_labor", "vertical_integration", "dyad_id", "decade"] + controls_union
+    analysis_union = df_union.dropna(subset=required_union).copy()
+
+    formula_union = f"div_labor ~ uninst + voice + hier + {control_str_union} + C(dyad_id) + C(decade)"
+
+    try:
+        model_union = smf.ols(formula_union, data=analysis_union).fit(
+            cov_type="cluster",
+            cov_kwds={"groups": analysis_union["dyad_id"]},
+        )
+
+        print(f"\n  UNION categorical results (vs. DCA-only reference):")
+        print(f"  Sample size:     N = {int(model_union.nobs):,}")
+        for var in ["uninst", "voice", "hier"]:
+            c = model_union.params[var]
+            s = model_union.bse[var]
+            p = model_union.pvalues[var]
+            print(f"    {var:<12}: {_format_coef(c, s, p)}")
+
+        results["categorical_union"] = {
+            var: {"coef": model_union.params[var], "se": model_union.bse[var], "p": model_union.pvalues[var]}
+            for var in ["uninst", "voice", "hier"]
+        }
+        results["categorical_union"]["n"] = int(model_union.nobs)
+
+    except np.linalg.LinAlgError as e:
+        print(f"  ⚠ UNION model estimation failed: {e}")
+        results["categorical_union"] = None
+
+    # =========================================================================
+    # SAVE RESULTS
+    # =========================================================================
+    # Save main results
+    if results.get("categorical_main"):
+        main_df = pd.DataFrame([{
+            "specification": "categorical_main_ATOP_only",
+            "reference": "uninstitutionalized",
+            **{f"voice_{k}": v for k, v in [("coef", results["categorical_main"]["voice"]),
+                                             ("se", results["categorical_main"]["voice_se"]),
+                                             ("p", results["categorical_main"]["voice_p"])]},
+            **{f"hier_{k}": v for k, v in [("coef", results["categorical_main"]["hier"]),
+                                            ("se", results["categorical_main"]["hier_se"]),
+                                            ("p", results["categorical_main"]["hier_p"])]},
+            "n": results["categorical_main"]["n"],
+            "n_dyads": results["categorical_main"]["n_dyads"],
+            "r2": results["categorical_main"]["r2"],
+        }])
+        main_df.to_csv(paths.h2_dir / "model_h2_primary.csv", index=False)
+
+    # Save sample IDs for reproducibility
+    if analysis is not None and len(analysis) > 0:
+        sample_ids = analysis[["dyad_id", "year"]].drop_duplicates()
+        sample_ids.to_csv(paths.h2_dir / "h2_main_sample_ids.csv", index=False)
+        print(f"\n  Saved sample IDs: {paths.h2_dir / 'h2_main_sample_ids.csv'}")
+
+    # =========================================================================
+    # DIAGNOSTIC: PLACEBO TEST (Future inst predicting current div_labor)
+    # =========================================================================
+    print(_subhead("DIAGNOSTIC: Placebo Test (Falsification)"))
+    print("""
+  What this tests: Does FUTURE institutionalization predict CURRENT div_labor?
+  If yes, this would suggest confounding or reverse causality.
+  Expected: No significant effect.
+""")
+
+    try:
+        # Create lead institutionalization (1 year ahead)
+        df_main_sorted = df_main.sort_values(["dyad_id", "year"])
+        df_main_sorted["inst_012_lead1"] = df_main_sorted.groupby("dyad_id")["inst_012"].shift(-1)
+
+        placebo_required = ["div_labor", "inst_012_lead1", "dyad_id", "decade"] + controls
+        placebo_analysis = df_main_sorted.dropna(subset=placebo_required).copy()
+
+        if len(placebo_analysis) > 100:
+            formula_placebo = f"div_labor ~ inst_012_lead1 + {control_str} + C(dyad_id) + C(decade)"
+            model_placebo = smf.ols(formula_placebo, data=placebo_analysis).fit(
+                cov_type="cluster",
+                cov_kwds={"groups": placebo_analysis["dyad_id"]},
+            )
+
+            coef_p = model_placebo.params["inst_012_lead1"]
+            se_p = model_placebo.bse["inst_012_lead1"]
+            pval_p = model_placebo.pvalues["inst_012_lead1"]
+
+            print(f"  Sample size:     N = {int(model_placebo.nobs):,}")
+            print(f"  RESULT:          {_format_coef(coef_p, se_p, pval_p)}")
+
+            if pval_p >= 0.10:
+                print(f"  Verdict:         ✓ PASSED — Future inst does not predict current div_labor")
+            else:
+                print(f"  Verdict:         ⚠ CONCERN — Possible confounding/reverse causality")
+
+            results["placebo"] = {"coefficient": coef_p, "se": se_p, "p_value": pval_p}
+        else:
+            print(f"  ⚠ Insufficient observations for placebo test ({len(placebo_analysis)})")
+    except Exception as e:
+        print(f"  ⚠ Placebo test failed: {e}")
+
+    # =========================================================================
+    # HETEROGENEITY: Capability Asymmetry
+    # =========================================================================
+    print(_subhead("HETEROGENEITY: By Capability Asymmetry"))
+    print("""
+  Does institutionalization matter MORE when partners are capability-unequal?
+  Split sample by milex_ratio (median split): High parity vs Low parity.
+""")
+
+    try:
+        if "milex_ratio" in analysis.columns:
+            median_milex = analysis["milex_ratio"].median()
+            analysis["high_parity"] = (analysis["milex_ratio"] >= median_milex).astype(int)
+
+            for parity_val, parity_label in [(1, "High Parity (similar capabilities)"),
+                                              (0, "Low Parity (asymmetric capabilities)")]:
+                sub = analysis[analysis["high_parity"] == parity_val]
+                if len(sub) > 100:
+                    model_het = smf.ols(formula_cat, data=sub).fit(
+                        cov_type="cluster",
+                        cov_kwds={"groups": sub["dyad_id"]},
+                    )
+                    voice_c = model_het.params.get("voice", np.nan)
+                    hier_c = model_het.params.get("hier", np.nan)
+                    print(f"  {parity_label}:")
+                    print(f"    N = {int(model_het.nobs):,}, Voice β = {voice_c:.4f}, Hier β = {hier_c:.4f}")
+                else:
+                    print(f"  {parity_label}: Insufficient N ({len(sub)})")
+
+            results["heterogeneity_parity"] = {"median_milex": median_milex}
+        else:
+            print(f"  ⚠ milex_ratio not available for heterogeneity analysis")
+    except Exception as e:
+        print(f"  ⚠ Heterogeneity analysis failed: {e}")
+
+    # =========================================================================
+    # REPLICATION CHECKLIST
+    # =========================================================================
+    print(_subhead("REPLICATION CHECKLIST"))
+    print(f"""
+  ═══════════════════════════════════════════════════════════════════════════
+  GANNON REPLICATION STATUS
+  ═══════════════════════════════════════════════════════════════════════════
+
+  ✓ Sample: ATOP-only offense/defense dyads (D4)
+  ✓ Window: 1980-2010 (DCAD aligned)
+  ✓ N = {len(analysis):,} dyad-years, {analysis['dyad_id'].nunique():,} dyads
+  ✓ Inst coding: Leeds & Anac (2005) from ATOP provisions
+  ✓ SUBORD classified as hierarchical (D2)
+  ✓ Reference category: Uninstitutionalized (D3)
+  ✓ Governance as nominal 3-category (D1)
+  ✓ Controls: {', '.join(controls) if controls else 'none'} (gdp_ratio on LEVELS)
+  ✓ FE: Dyad + Decade
+  ✓ SE: Clustered by dyad
+
+  EXPLICIT DEVIATIONS FROM GANNON:
+    D1: Alliance governance treated as 3-category NOMINAL (not ordinal)
+    D2: SUBORD classified as HIERARCHICAL
+    D3: Reference category is UNINSTITUTIONALIZED (not DCA-only)
+    D4: MAIN tests use ATOP-only; UNION is robustness only
+""")
 
     return results
 
@@ -712,9 +916,9 @@ def print_summary_table() -> None:
         ("H1", "Right ideology -> less spec?"),
         ("ES_to_right", "L->R: spec decrease?"),
         ("ES_to_left", "R->L: spec increase?"),
-        ("H2_ordinal", "Alliance depth -> div labor?"),
-        ("H2A", "Voice > uninstitutionalized?"),
-        ("H2B", "Hierarchical > voice?"),
+        ("H2_ordinal", "Inst depth -> div labor? (suppl.)"),
+        ("H2A", "Voice > uninst? (vs uninst ref)"),
+        ("H2B", "Hier > uninst? (vs uninst ref)"),
         ("H3", "Ideo distance -> less div labor?"),
     ]
 
